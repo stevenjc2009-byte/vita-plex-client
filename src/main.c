@@ -10,6 +10,7 @@
 #include "network.h"
 #include "progress.h"
 #include "performance.h"
+#include "library.h"
 #include <stdio.h>
 #include <string.h>
 #ifdef __vita__
@@ -39,6 +40,7 @@ static int save(settings_t *st) {
 }
 static int request(settings_t *st,const char *target,const char *accept) {
   if(network_get(target,st->client_id,accept,body,sizeof(body),15)==0)return 0;
+  if(network_cancelled()){snprintf(notice,sizeof(notice),"Request cancelled.");return -1;}
   int status=http_last_status();
   if(status==401 || status==403)snprintf(notice,sizeof(notice),"Server denied access (%d). Check the token and server in Settings.",status);
   else snprintf(notice,sizeof(notice),"Server request failed (HTTP %d, error 0x%X). Square retries; SELECT opens Settings.",status,http_last_error());
@@ -62,6 +64,7 @@ static int discover(settings_t *st) {
       snprintf(probe,sizeof(probe),"%s/identity?X-Plex-Token=%s",candidate,tok);gui_message("Choose server","Checking server connection","O cancels.");
       if(!network_get(probe,st->client_id,"text/xml",probe_body,sizeof(probe_body),5)){if(attempt>=0)snprintf(chosen->url,sizeof(chosen->url),"%s",candidate);reachable=1;break;}
       if(network_exit_requested())return -1;
+      if(network_cancelled()){snprintf(notice,sizeof(notice),"Connection check cancelled. Saved server unchanged.");return 0;}
     }
     if(!reachable){snprintf(notice,sizeof(notice),"None of this server's connections responded. Saved server unchanged.");return 0;}
     if(settings_server_url(servers[selected].url)<0){snprintf(notice,sizeof(notice),"The selected server address is invalid.");return 0;}
@@ -106,16 +109,7 @@ static int settings_screen(settings_t *st,const char *section) {
     else if(choice==4) {st->resume=!st->resume;save(st);}
     else if(choice==5) {st->sort=(st->sort+1)%3;save(st);}
     else if(choice==6)return GUI_HOME;
-    else if(choice==7) {
-      const char *confirm[]={"Start server scan","Cancel"};
-      int r=gui_choice("Scan media files","Plex will scan for new media in the background.",confirm,2);
-      if(r==GUI_QUIT)return r;
-      if(r==0) {
-        char path[128];snprintf(path,sizeof(path),"/library/sections/%s/refresh",section && *section?section:"all");
-        plex_build_page_url(st->server,st->token,path,"","",0,1,url,sizeof(url));
-        gui_message("Library scan","Asking Plex to scan","You can refresh the library after Plex finishes scanning.");
-        if(!request(st,url,"text/xml"))snprintf(notice,sizeof(notice),"Server scan requested. Refresh after Plex finishes.");
-      }
+    else if(choice==7) {if(library_scan(st,section,body,sizeof(body),notice,sizeof(notice))==GUI_QUIT)return GUI_QUIT;
     } else if(choice==8) {
       char download[1024],tag[64];gui_message("App update","Checking GitHub releases","This can take a few seconds.");
       int r=update_check(download,sizeof(download),tag,sizeof(tag));
@@ -186,7 +180,7 @@ int main(void) {
   if(gui_init()<0){psvDebugScreenPrintf("Cannot load Plex interface. Reinstall the complete VPK.\n");sceKernelDelayThread(4000000);performance_restore();sceKernelExitProcess(1);return 1;}
   gui_message("Plex for Vita","Connecting","Loading your account and saved server settings.");
   sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(),0x10000);
-  int net=http_init();if(net<0)snprintf(notice,sizeof(notice),"Network setup failed (0x%X). Reconnect Wi-Fi and restart.",net);
+  int net=http_init();if(net<0)snprintf(notice,sizeof(notice),"Network setup failed (0x%X). Reconnect Wi-Fi; Square retries.",net);
   if(net>=0 && st.token[0] && progress_pending())progress_retry(&st);
   int depth=0,count=0,total=0,fetch=1;
   snprintf(locations[0].title,sizeof(locations[0].title),"Your libraries");
@@ -215,7 +209,7 @@ int main(void) {
       fetch=0;
     }
     if(settings_unsaved)snprintf(notice,sizeof(notice),"Settings are not saved. Check free space, then save a setting again.");
-    char subtitle[240];snprintf(subtitle,sizeof(subtitle),"%s%s%s",depth?sort_names[st.sort]:"Choose a library to explore",loc->search[0]?"  |  Search: ":"",loc->search);
+    char subtitle[240];snprintf(subtitle,sizeof(subtitle),"%s%s%s",depth?(strstr(loc->path,"/onDeck")?"Continue Watching":strstr(loc->path,"/recentlyAdded")?"Recently added":sort_names[st.sort]):"Choose a library to explore",loc->search[0]?"  |  Search: ":"",loc->search);
     gui_view_t view={.title=loc->title,.subtitle=subtitle,.notice=notice,.server=st.server,.token=st.token,
       .items=items,.n=count,.libraries=depth==0,.offset=loc->offset,.total=total,.cursor=loc->cursor};
     int action=gui_browse_view(&view);loc->cursor=view.cursor;
@@ -225,6 +219,7 @@ int main(void) {
     else if(action==GUI_HOME){depth=0;locations[0].offset=locations[0].cursor=0;fetch=1;}
     else if(action==GUI_BACK){if(depth){depth--;fetch=1;}else {int r=settings_screen(&st,NULL);if(r==GUI_QUIT)break;fetch=1;}}
     else if(action==GUI_SETTINGS){int old_sort=st.sort;int r=settings_screen(&st,loc->section);if(old_sort!=st.sort){loc->offset=loc->cursor=0;}if(r==GUI_QUIT)break;if(r==GUI_HOME)depth=0;fetch=1;}
+    else if(action==GUI_SCAN){const char *section=loc->section;if(!depth && count && view.cursor>=0 && view.cursor<count)section=items[view.cursor].key;if(library_scan(&st,section,body,sizeof(body),notice,sizeof(notice))==GUI_QUIT)break;}
     else if(action==GUI_REFRESH){notice[0]=0;fetch=1;}
     else if(action==GUI_NEXT){loc->offset+=BROWSE_MAX_ITEMS;loc->cursor=0;fetch=1;}
     else if(action==GUI_PREVIOUS){loc->offset=loc->offset>BROWSE_MAX_ITEMS?loc->offset-BROWSE_MAX_ITEMS:0;loc->cursor=0;fetch=1;}

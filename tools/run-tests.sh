@@ -9,6 +9,8 @@ trap 'rm -rf "$scratch"' EXIT
 compiler=${CC:-cc}
 "$compiler" -std=c11 -Wall -Wextra -Werror -Isrc tools/regression_test.c src/plex_auth.c src/plex.c src/browse.c src/settings.c src/update.c -o "$scratch/regression"
 (cd "$scratch" && ./regression)
+"$compiler" -std=c11 -Wall -Wextra -Werror -Wno-misleading-indentation -Isrc tools/library_scan_test.c src/library.c src/browse.c src/plex_auth.c -o "$scratch/library"
+"$scratch/library"
 for header in audioout.h avplayer.h ctrl.h display.h kernel/sysmem.h io/fcntl.h kernel/threadmgr.h kernel/processmgr.h sysmodule.h types.h; do
  mkdir -p "$scratch/include/psp2/$(dirname "$header")"
  printf '#include <psp2/mock.h>\n' > "$scratch/include/psp2/$header"

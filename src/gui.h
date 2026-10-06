@@ -1,7 +1,7 @@
 #pragma once
 #include "browse.h"
 enum { GUI_BACK=-1, GUI_QUIT=-2, GUI_HOME=-3, GUI_SETTINGS=-4,
-  GUI_REFRESH=-5, GUI_SEARCH=-6, GUI_NEXT=-7, GUI_PREVIOUS=-8, GUI_SORT=-9,GUI_VIEWS=-10 };
+  GUI_REFRESH=-5, GUI_SEARCH=-6, GUI_NEXT=-7, GUI_PREVIOUS=-8, GUI_SORT=-9,GUI_VIEWS=-10, GUI_SCAN=-11 };
 typedef struct {
   const char *title, *subtitle, *notice, *server, *token;
   const browse_item_t *items;

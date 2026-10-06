@@ -280,22 +280,22 @@ int player_run(const char *title,unsigned duration,unsigned base_offset) {
   }
 
   int frames = 0;
-  int quit=0,user_stopped=0,show_controls=180,restart=0,redraw=1,last_visible=-1;
+  int quit=0,user_stopped=0,show_controls=180,restart=0,play_error=0,redraw=1,last_visible=-1;
   unsigned last_second=~0u,last_progress=0;int progress_sent=0;
-  unsigned no_frames=0;
+  uint64_t last_frame=sceKernelGetProcessTimeWide();
   while (!stop_flag && (paused || sceAvPlayerIsActive(handle) == SCE_TRUE)) {
     if(audio_error){plog("audio output FAIL 0x%X",audio_error);break;}
     if (sceAvPlayerGetVideoData(handle, &vf) && vf.pData) {
       if (!frames)
         plog("play first frame %ux%u", vf.details.video.width,
           vf.details.video.height);
-      if(blit_frame(&vf)){plog("invalid video frame %ux%u",vf.details.video.width,vf.details.video.height);break;}
+      if(blit_frame(&vf)){plog("invalid video frame %ux%u",vf.details.video.width,vf.details.video.height);play_error=-7;break;}
       frames++;
       if(!(frames%120))plog("render conversion avg=%uus max=%uus frames=%d stamp=%llu clock=%llu",conversion_count?(unsigned)(conversion_total/conversion_count):0,conversion_max,frames,(unsigned long long)vf.timeStamp,(unsigned long long)sceAvPlayerCurrentTime(handle));
-      no_frames=0;
+      last_frame=sceKernelGetProcessTimeWide();
       valid_position=1;redraw=1;
     }
-    else if(!paused)no_frames++;
+    if(paused)last_frame=sceKernelGetProcessTimeWide();
     if(valid_position)final_position=base_offset+(unsigned)sceAvPlayerCurrentTime(handle);
     int visible=show_controls>0;unsigned second=final_position/1000;
     if(visible!=last_visible || (visible && second!=last_second))redraw=1;
@@ -323,14 +323,14 @@ int player_run(const char *title,unsigned duration,unsigned base_offset) {
       restart=1;break; // rebuild HLS at absolute time, including before the resume base
     }
     // A stream that never produces video must not be reported as success.
-    if(!frames && no_frames>1800){plog("active without video");break;}
+    if(!paused && sceKernelGetProcessTimeWide()-last_frame>45000000ULL){plog("video stalled");play_error=-5;break;}
     sceDisplayWaitVblankStart();
   }
   plog("play end frames=%d", frames);
 
-  natural_end=!restart && !quit && !user_stopped && frames && sceAvPlayerIsActive(handle)!=SCE_TRUE;
+  natural_end=!play_error && !audio_error && !restart && !quit && !user_stopped && frames && sceAvPlayerIsActive(handle)!=SCE_TRUE;
   player_stop();
-  return audio_error?audio_error:restart?2:quit?1:frames?0:-5;
+  return play_error?play_error:audio_error?audio_error:restart?2:quit?1:frames?0:-5;
 }
 int player_run_blocking(void){return player_run("Now playing",0,0);}
 unsigned player_position(void){return valid_position?final_position:0;}

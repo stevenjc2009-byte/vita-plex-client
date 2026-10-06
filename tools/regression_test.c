@@ -62,6 +62,8 @@ int main(void) {
   assert(!plex_build_page_url("http://server:32400","a&b","/library/sections/2/all","hello & world","titleSort:asc",80,40,url,sizeof(url)));
   assert(strstr(url,"X-Plex-Container-Start=80&X-Plex-Container-Size=40"));
   assert(strstr(url,"&title=hello%20%26%20world&sort=titleSort%3Aasc"));
+  assert(!plex_build_page_url("http://server:32400","a&b","/library/sections/93/refresh","","",0,1,url,sizeof(url)));
+  assert(strstr(url,"/library/sections/93/refresh?") && strstr(url,"X-Plex-Token=a%26b") && !strstr(url,"force="));
   assert(plex_build_page_url("http://server:32400","token","/path",NULL,NULL,-1,40,url,sizeof(url))<0);
   plex_server_t servers[2];
   const char *resources="<MediaContainer><Device name='Home' provides='server' accessToken='server-token'><Connection local='0' uri='https://public:32400'/><Connection local='1' uri='http://192.168.0.32:32400'/></Device><Device name='Web' provides='client'></Device></MediaContainer>";

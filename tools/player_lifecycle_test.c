@@ -10,7 +10,7 @@ static int active_calls,frames,peeks,closed,starts,thread_started,joined;
 static int audio_case,audio_outputs,scenario,overlay_seen;
 static unsigned last_pixel;
 static uint64_t time_us;
-uint64_t sceKernelGetProcessTimeWide(void){return time_us+=100;}
+uint64_t sceKernelGetProcessTimeWide(void){return time_us+=scenario==3?1000000:100;}
 SceUID performance_thread(const char*n,SceKernelThreadEntry fn,int p,unsigned stack,int affinity){assert(affinity==0x20000);return sceKernelCreateThread(n,fn,p,(int)stack,0,affinity,NULL);}
 static int (*thread_fn)(SceSize,void*);
 static void *decoder_memory,*generic_memory;
@@ -49,10 +49,10 @@ int sceAvPlayerInit(SceAvPlayerInitData *data){assert(data->autoStart==SCE_TRUE 
  assert(generic_memory && decoder_memory);return 5;}
 int sceAvPlayerAddSource(int handle,const char *url){assert(handle==5 && url[0]);return source_fail?-20:0;}
 int sceAvPlayerStart(int h){(void)h;starts++;return -21;}
-int sceAvPlayerIsActive(int h){assert(h==5);active_calls++;return !never_active && active_calls>=3 && (scenario==2 || frames<2);}
+int sceAvPlayerIsActive(int h){assert(h==5);active_calls++;return !never_active && active_calls>=3 && (scenario==2 || scenario==3 || scenario==4 || frames<2);}
 int sceAvPlayerGetVideoData(int h,SceAvPlayerFrameInfo *frame){assert(h==5);static unsigned char pixels[6]={128,128,128,128,128,128};
- if(scenario==2 && frames)return 0;
- frame->pData=pixels;frame->details.video.width=2;frame->details.video.height=2;frames++;return 1;}
+ if((scenario==2 || scenario==3) && frames)return 0;
+ frame->pData=pixels;frame->details.video.width=scenario==4 && frames?3:2;frame->details.video.height=2;frames++;return 1;}
 int sceAvPlayerGetAudioData(int h,SceAvPlayerFrameInfo *f){(void)h;static short pcm[2048];if(!audio_case)return 0;
  f->pData=(unsigned char*)pcm;f->details.audio.channelCount=2;f->details.audio.sampleRate=44100;f->details.audio.size=sizeof(pcm);return 1;}
 uint64_t sceAvPlayerCurrentTime(int h){assert(h==5);return frames*40;}
@@ -80,5 +80,7 @@ int main(void){
  assert(player_seek_position()==2040 && player_position()==12040 && !player_completed() && joined && !open_blocks());
  reset();assert(!player_play_hls("http://mock/video.m3u8"));scenario=2;assert(!player_run("Movie",100000,0));
  assert(overlay_seen && last_pixel==0 && !player_completed() && joined && !open_blocks());
+ reset();assert(!player_play_hls("http://mock/video.m3u8"));scenario=3;assert(player_run("Stall",100000,0)==-5);assert(frames==1 && !player_completed() && joined && !open_blocks());
+ reset();assert(!player_play_hls("http://mock/video.m3u8"));scenario=4;assert(player_run("Invalid frame",100000,0)==-7);assert(!player_completed() && joined && !open_blocks());
  player_stop();assert(!open_blocks());puts("Player lifecycle tests passed (mock Vita APIs)");return 0;
 }

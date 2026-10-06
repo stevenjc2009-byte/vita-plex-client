@@ -197,8 +197,8 @@ static const char *kind(const browse_item_t *it) {
 static void shell(const char *title,const char *subtitle,int nav) {
   rect(0,0,W,H,BG);rect(0,0,176,H,PANEL);
   text("PLEX",22,17,2,GOLD,140);text("for PlayStation Vita",22,58,0,GREY,144);
-  static const char *links[]={"Home","Libraries","Search","Refresh","Settings"};
-  for(int i=0;i<5;i++) {
+  static const char *links[]={"Home","Libraries","Search","Refresh list","Scan library","Settings"};
+  for(int i=0;i<6;i++) {
     if(nav==i){rect(12,124+i*52,152,42,TILE);rect(12,124+i*52,3,42,GOLD);}
     text(links[i],30,132+i*52,1,nav==i?WHITE:GREY,132);
   }
@@ -350,9 +350,9 @@ int gui_browse_view(gui_view_t *v) {
     if(p&SCE_CTRL_SQUARE){result=GUI_REFRESH;break;}
     if(p&SCE_CTRL_CIRCLE){if(nav>=0){nav=-1;continue;}result=GUI_BACK;break;}
     if(nav>=0) {
-      if(p&SCE_CTRL_UP && nav>0)nav--;if(p&SCE_CTRL_DOWN && nav<4)nav++;
+      if(p&SCE_CTRL_UP && nav>0)nav--;if(p&SCE_CTRL_DOWN && nav<5)nav++;
       if(p&SCE_CTRL_RIGHT){nav=-1;continue;}
-      if(p&SCE_CTRL_CROSS){int actions[]={GUI_VIEWS,GUI_HOME,GUI_SEARCH,GUI_REFRESH,GUI_SETTINGS};result=actions[nav];break;}
+      if(p&SCE_CTRL_CROSS){int actions[]={GUI_VIEWS,GUI_HOME,GUI_SEARCH,GUI_REFRESH,GUI_SCAN,GUI_SETTINGS};result=actions[nav];break;}
       continue;
     }
     if(p&SCE_CTRL_CROSS && v->n){result=v->cursor;break;}
