@@ -148,25 +148,33 @@ static int ime_prompt_token(char *out, unsigned out_len) {
   // delay loop here wedges the app with the Vita itself fine. So: init
   // GXM exactly like the sample, swap a black buffer under the keyboard
   // overlay while it runs, then tear down and reclaim our framebuffer.
+  // Init like the official ime sample, but with the minimum 256KB
+  // parameter buffer: the full 16MB plus our text framebuffer exhausts
+  // the device's free CDRAM pages (0x80024309 on alloc). Real callback
+  // kept (NULL callback fails init with 0x805B0017).
   static void *gxm_cb_data = NULL;
   SceGxmInitializeParams gp;
   memset(&gp, 0, sizeof(gp));
   gp.displayQueueMaxPendingCount = 1;
   gp.displayQueueCallback = gxm_vsync_cb;
   gp.displayQueueCallbackDataSize = sizeof(gxm_cb_data);
-  gp.parameterBufferSize = SCE_GXM_DEFAULT_PARAMETER_BUFFER_SIZE;
+  gp.parameterBufferSize = 0x40000; // SDK minimum, saves ~16MB CDRAM
   int gr = sceGxmInitialize(&gp);
   log_msg("ime sceGxmInitialize=0x%X", gr);
   if (gr < 0) {
     snprintf(out, out_len, "GXMINIT:0x%X", gr);
     return -2;
   }
+  // Park our text framebuffer: frees ~2MB CDRAM for the buffers below
+  // and avoids leaking a memblock per keyboard open on re-init.
+  int fr = psvDebugScreenFinish();
+  log_msg("ime screen finish=0x%X", fr);
   // Two display buffers in CDRAM with sync objects, per the sample.
   static void *dbase[2] = { NULL, NULL };
   static SceUID dblk[2] = { 0, 0 };
   static SceGxmColorSurface dsurf[2];
   static SceGxmSyncObject *dsync[2] = { NULL, NULL };
-  int back = 0, front = 0, ok = -1, i, r;
+  int back = 0, front = 0, ok = -1, i, r, noswap = 0;
   for (i = 0; i < 2; i++) {
     dblk[i] = sceKernelAllocMemBlock("gxm_disp",
       SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, 4 * 1024 * 544, NULL);
@@ -185,9 +193,15 @@ static int ime_prompt_token(char *out, unsigned out_len) {
     if (sr < 0) { dsync[i] = NULL; break; }
   }
   if (i < 2) {
-    snprintf(out, out_len, "GXMDISP:0x%X",
-      dblk[i] < 0 ? dblk[i] : -1);
-    goto ime_cleanup;
+    // Display buffers didn't fit: try without frame presentation rather
+    // than failing outright. Log says which path we took.
+    log_msg("ime noswap fallback (had %d/2 buffers)", i);
+    noswap = 1;
+    for (i = 0; i < 2; i++) {
+      if (dsync[i]) { sceGxmSyncObjectDestroy(dsync[i]); dsync[i] = NULL; }
+      if (dblk[i] > 0) { sceKernelFreeMemBlock(dblk[i]); dblk[i] = -1; }
+      dbase[i] = NULL;
+    }
   }
   r = sceImeDialogInit(&p);
   log_msg("ime sceImeDialogInit=0x%X", r);
@@ -202,17 +216,23 @@ static int ime_prompt_token(char *out, unsigned out_len) {
   i = 0;
   int last_st = -99, hb = 0;
   int st = sceImeDialogGetStatus();
-  log_msg("ime first status=%d", st);
+  log_msg("ime first status=%d noswap=%d", st, noswap);
   while (st == SCE_COMMON_DIALOG_STATUS_RUNNING && i++ < 3600) {
-    int hr = sceGxmPadHeartbeat(&dsurf[back], dsync[back]);
-    gxm_cb_data = dbase[back];
-    int qr = sceGxmDisplayQueueAddEntry(dsync[front], dsync[back],
-      &gxm_cb_data);
-    if (hb++ % 300 == 0)
-      log_msg("ime wait i=%d heart=0x%X queue=0x%X", i, hr, qr);
-    front = back;
-    back = (back + 1) % 2;
-    sceKernelDelayThread(33000);
+    if (!noswap) {
+      int hr = sceGxmPadHeartbeat(&dsurf[back], dsync[back]);
+      gxm_cb_data = dbase[back];
+      int qr = sceGxmDisplayQueueAddEntry(dsync[front], dsync[back],
+        &gxm_cb_data);
+      if (hb++ % 300 == 0)
+        log_msg("ime wait i=%d heart=0x%X queue=0x%X", i, hr, qr);
+      front = back;
+      back = (back + 1) % 2;
+      sceKernelDelayThread(33000);
+    } else {
+      if (hb++ % 60 == 0)
+        log_msg("ime noswap wait i=%d", i);
+      sceKernelDelayThread(50000);
+    }
     st = sceImeDialogGetStatus();
     if (st != last_st) { log_msg("ime status %d -> %d at i=%d", last_st, st, i); last_st = st; }
   }
