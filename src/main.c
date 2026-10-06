@@ -247,8 +247,8 @@ int main(void) {
             "Code ready - enter it at plex.tv/link, then press X");
         } else {
           snprintf(status, sizeof(status),
-            "plex.tv unreachable (HTTP %d) - check Vita date/time, then X",
-            http_last_status());
+            "plex.tv unreachable (HTTP %d err 0x%X) - tell me both numbers",
+            http_last_status(), http_last_error());
         }
         break;
       case ACT_PIN_POLL:
@@ -263,8 +263,8 @@ int main(void) {
           snprintf(status, sizeof(status), "Signed in!");
         } else {
           snprintf(status, sizeof(status),
-            "Not approved yet (HTTP %d) - code at plex.tv/link, then X",
-            http_last_status());
+            "Not approved yet (HTTP %d err 0x%X) - code at plex.tv/link, X",
+            http_last_status(), http_last_error());
         }
         break;
       case ACT_FETCH_SEC:

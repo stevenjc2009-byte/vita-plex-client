@@ -19,8 +19,10 @@ static int inited = 0;
 // Last HTTP status seen (or negative SceHttp error). Shown in the UI
 // so failures are diagnosable instead of a bare "network error".
 static int last_status = 0;
+static int last_error = 0;
 
 int http_last_status(void) { return last_status; }
+int http_last_error(void) { return last_error; }
 
 int http_init(void) {
   if (inited) return 0;
@@ -80,14 +82,15 @@ static int run(const char *url, const char *client_id, const char *accept,
   if (body_len) body[0] = 0;
   int code = -1, tmpl = -1, conn = -1, req = -1, r;
   unsigned used = 0;
+  last_error = 0;
 
   tmpl = sceHttpCreateTemplate("PlexVita/1.0", SCE_HTTP_VERSION_1_1, SCE_TRUE);
-  if (tmpl < 0) goto out;
+  if (tmpl < 0) { last_error = tmpl; goto out; }
   set_plex_headers(tmpl, client_id, accept);
   conn = sceHttpCreateConnectionWithURL(tmpl, url, SCE_TRUE);
-  if (conn < 0) goto out;
+  if (conn < 0) { last_error = conn; goto out; }
   req = sceHttpCreateRequestWithURL(conn, method, url, 0);
-  if (req < 0) goto out;
+  if (req < 0) { last_error = req; goto out; }
   // Fail fast on dead networks: stock timeouts are 30s connect /
   // 120s send+recv, which looks like a hang with zero feedback.
   sceHttpSetResolveTimeOut(req, 10 * 1000 * 1000);
@@ -96,10 +99,11 @@ static int run(const char *url, const char *client_id, const char *accept,
   sceHttpSetRecvTimeOut(req, 15 * 1000 * 1000);
 
   r = sceHttpSendRequest(req, NULL, 0);
-  if (r < 0) goto out;
+  if (r < 0) { last_error = r; goto out; }
 
   int status = 0;
-  if (sceHttpGetStatusCode(req, &status) < 0) goto out;
+  r = sceHttpGetStatusCode(req, &status);
+  if (r < 0) { last_error = r; goto out; }
   last_status = status;
   // plex.tv PIN creation answers 201 Created, not 200 — accept any 2xx.
   if (status < 200 || status >= 300) goto out;
@@ -107,7 +111,7 @@ static int run(const char *url, const char *client_id, const char *accept,
   for (;;) {
     if (used + 1024 >= body_len) break;
     int n = sceHttpReadData(req, body + used, body_len - used - 1);
-    if (n < 0) goto out;
+    if (n < 0) { last_error = n; goto out; }
     if (n == 0) break;
     used += (unsigned)n;
     body[used] = 0;
@@ -198,5 +202,6 @@ int http_download(const char *u, const char *p,
   return -1;
 }
 int http_last_status(void) { return 0; }
+int http_last_error(void) { return 0; }
 
 #endif

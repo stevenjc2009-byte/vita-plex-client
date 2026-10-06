@@ -12,3 +12,5 @@ int http_download(const char *url, const char *path,
   void (*progress_cb)(unsigned received, unsigned total));
 // Last HTTP status seen by run() (0 = none yet). For UI diagnostics.
 int http_last_status(void);
+// Last SceHttp error from run() (0 = none). For UI diagnostics.
+int http_last_error(void);
