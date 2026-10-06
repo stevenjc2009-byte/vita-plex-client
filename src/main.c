@@ -9,6 +9,8 @@
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/io/stat.h>
+#include <psp2/ime_dialog.h>
+#include <psp2/sysmodule.h>
 #include "debugScreen.h"
 #define DBG_INIT() psvDebugScreenInit()
 // NOTE: "\033[2J" only wipes pixels — the cursor stays where it was,
@@ -75,12 +77,53 @@ static void ui_footer(const char *s) {
   DBG_PRINT("\n");
   ui_center(s);
 }
+
+// System keyboard prompt for pasting/typing the 20-char Plex token.
+// Used when plex.tv TLS is unreachable (old Vita SSL stack): the token
+// comes from Plex Web on a PC, everything after runs over plain LAN HTTP.
+static int ime_prompt_token(char *out, unsigned out_len) {
+  static const SceWChar16 title[] = { 'E','n','t','e','r',' ','P','l','e','x',
+    ' ','t','o','k','e','n', 0 };
+  static SceWChar16 buf[65];
+  memset(buf, 0, sizeof(buf));
+  SceImeDialogParam p;
+  sceImeDialogParamInit(&p);
+  p.inputMethod = 0;
+  p.supportedLanguages = SCE_IME_LANGUAGE_ENGLISH;
+  p.type = SCE_IME_TYPE_BASIC_LATIN;
+  p.option = SCE_IME_OPTION_NO_AUTO_CAPITALIZATION |
+    SCE_IME_OPTION_NO_ASSISTANCE;
+  p.dialogMode = SCE_IME_DIALOG_DIALOG_MODE_WITH_CANCEL;
+  p.textBoxMode = SCE_IME_DIALOG_TEXTBOX_MODE_WITH_CLEAR;
+  p.title = title;
+  p.maxTextLength = 64;
+  p.initialText = buf;
+  p.inputTextBuffer = buf;
+  if (sceImeDialogInit(&p) < 0) return -1;
+  while (sceImeDialogGetStatus() == SCE_COMMON_DIALOG_STATUS_RUNNING)
+    sceKernelDelayThread(50000);
+  SceImeDialogResult res;
+  memset(&res, 0, sizeof(res));
+  int ok = -1;
+  if (sceImeDialogGetResult(&res) == 0 &&
+      res.button == SCE_IME_DIALOG_BUTTON_ENTER) {
+    unsigned i = 0;
+    while (i + 1 < out_len && buf[i] && i < 64 &&
+        buf[i] >= 0x20 && buf[i] < 0x7F)
+      { out[i] = (char)buf[i]; i++; }
+    out[i] = 0;
+    if (i) ok = 0;
+  }
+  sceImeDialogTerm();
+  return ok;
+}
 #endif
 
 int main(void) {
 #ifdef __vita__
   DBG_INIT();
   sceIoMkdir("ux0:data/plex-client", 0777);
+  sceSysmoduleLoadModule(SCE_SYSMODULE_IME);
   http_init();
   ui_theme();
 
@@ -174,6 +217,20 @@ int main(void) {
       if (s == S_LOGIN) {
         if (!pin.pin_id) {
           if (pressed & SCE_CTRL_CROSS) pending = ACT_PIN_CREATE;
+          if (pressed & SCE_CTRL_TRIANGLE) {
+            char tok[128];
+            if (ime_prompt_token(tok, sizeof(tok)) == 0) {
+              snprintf(st.token, sizeof(st.token), "%s", tok);
+              settings_save(&st);
+              s = S_SECTIONS;
+              need_fetch = 1;
+              cursor = 0;
+              snprintf(status, sizeof(status), "Token saved - loading libraries");
+            } else {
+              snprintf(status, sizeof(status), "Token entry cancelled");
+            }
+            ui_theme(); // IME drew its own overlay
+          }
         } else {
           if (pressed & SCE_CTRL_CROSS) pending = ACT_PIN_POLL;
           if (pressed & SCE_CTRL_CIRCLE) {
@@ -327,6 +384,11 @@ int main(void) {
         ui_center("3.  Enter the code, come back, press X");
         ui_blank();
         ui_center("[ X ]  Get link code");
+        ui_blank();
+        ui_center("No code? On your PC open Plex Web, play anything,");
+        ui_center("copy X-Plex-Token from the address bar, then:");
+        ui_blank();
+        ui_center("[ /\\ ]  Enter token manually");
       } else {
         ui_center("On another device, go to plex.tv/link");
         ui_center("and enter this code:");
