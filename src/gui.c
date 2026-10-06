@@ -160,13 +160,42 @@ static int file_exists(const char *path) {
   return sceIoGetstat(path, &st) == 0;
 }
 
+// URL-encode a thumb path for use as a query value.
+static void url_encode(const char *in, char *out, unsigned out_len) {
+  static const char *hex = "0123456789ABCDEF";
+  unsigned o = 0;
+  for (int i = 0; in[i] && o + 4 < out_len; i++) {
+    char c = in[i];
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+        (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.') {
+      out[o++] = c;
+    } else {
+      out[o++] = '%';
+      out[o++] = hex[(c >> 4) & 15];
+      out[o++] = hex[c & 15];
+    }
+  }
+  out[o] = 0;
+}
+
 static void fetch_thumb(const char *server, const char *token,
     const char *thumb) {
-  char path[256], url[512];
+  char path[256], url[768], enc[384];
   art_path(thumb, path, sizeof(path));
-  if (file_exists(path)) return;
-  snprintf(url, sizeof(url), "%s%s?X-Plex-Token=%s&width=160&height=240",
-    server, thumb, token);
+  if (file_exists(path)) {
+    // v01.23 cached full-size originals (5MB+): too heavy, refetch small.
+    SceIoStat st;
+    if (sceIoGetstat(path, &st) == 0 && (int)st.st_size > 1024 * 1024)
+      sceIoRemove(path);
+    else
+      return;
+  }
+  // Ask the server to transcode small: raw thumbs can be 5MB+ JPEGs
+  // (one measured 4858592 bytes), slow to fetch and heavy to decode.
+  url_encode(thumb, enc, sizeof(enc));
+  snprintf(url, sizeof(url),
+    "%s/photo/:/transcode?width=160&height=240&minSize=1&url=%s&X-Plex-Token=%s",
+    server, enc, token);
   int rc = http_download(url, path, NULL);
   gui_log("art rc=%d http=%d err=0x%X %s", rc, http_last_status(),
     http_last_error(), thumb);
