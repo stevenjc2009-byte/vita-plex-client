@@ -10,7 +10,7 @@
 
 void settings_defaults(settings_t *s) {
   memset(s, 0, sizeof(*s));
-  snprintf(s->server, sizeof(s->server), "http://192.168.1.10:32400");
+  snprintf(s->server, sizeof(s->server), "http://192.168.0.32:32400");
 }
 
 void settings_ensure_client_id(settings_t *s) {
@@ -34,6 +34,11 @@ int settings_load(settings_t *s) {
   }
   fclose(f);
   settings_ensure_client_id(s);
+  // Migrate installs that still carry the placeholder IP from v01.01.
+  if (!strcmp(s->server, "http://192.168.1.10:32400")) {
+    snprintf(s->server, sizeof(s->server), "http://192.168.0.32:32400");
+    settings_save(s);
+  }
   return 0;
 }
 
