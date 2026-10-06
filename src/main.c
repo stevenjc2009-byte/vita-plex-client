@@ -12,6 +12,7 @@
 #include <psp2/ime_dialog.h>
 #include <psp2/apputil.h>
 #include <psp2/gxm.h>
+#include <psp2/display.h>
 #include <psp2/sysmodule.h>
 #include "debugScreen.h"
 #define DBG_INIT() psvDebugScreenInit()
@@ -83,6 +84,18 @@ static void ui_footer(const char *s) {
 // System keyboard prompt for pasting/typing the 20-char Plex token.
 // Used when plex.tv TLS is unreachable (old Vita SSL stack): the token
 // comes from Plex Web on a PC, everything after runs over plain LAN HTTP.
+static void gxm_vsync_cb(const void *callback_data) {
+  SceDisplayFrameBuf fb;
+  memset(&fb, 0, sizeof(fb));
+  fb.size = sizeof(fb);
+  fb.base = *((void **)callback_data);
+  fb.pitch = 1024;
+  fb.pixelformat = 0;
+  fb.width = 960;
+  fb.height = 544;
+  sceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_NEXTFRAME);
+}
+
 static int ime_prompt_token(char *out, unsigned out_len) {
   static const SceWChar16 title[] = { 'E','n','t','e','r',' ','P','l','e','x',
     ' ','t','o','k','e','n', 0 };
@@ -104,11 +117,18 @@ static int ime_prompt_token(char *out, unsigned out_len) {
   p.inputTextBuffer = buf;
   // Common dialogs refuse to run unless libgxm is initialized
   // (SCE_COMMON_DIALOG_ERROR_GXM_IS_UNINITIALIZED = 0x80020436).
-  // Init-only: no display queue, our debugScreen framebuffer stays up.
+  // sceGxmInitialize with a NULL display callback fails with
+  // SCE_GXM_ERROR_DRIVER (0x805B0017), so pass the same params as the
+  // official vitasdk ime sample: real callback + 16MB parameter buffer.
+  // The callback only fires on display-queue swaps, which we never do,
+  // so our debugScreen framebuffer stays up throughout.
+  static void *gxm_cb_data = NULL;
   SceGxmInitializeParams gp;
   memset(&gp, 0, sizeof(gp));
   gp.displayQueueMaxPendingCount = 1;
-  gp.parameterBufferSize = 0x40000; // SDK minimum
+  gp.displayQueueCallback = gxm_vsync_cb;
+  gp.displayQueueCallbackDataSize = sizeof(gxm_cb_data);
+  gp.parameterBufferSize = SCE_GXM_DEFAULT_PARAMETER_BUFFER_SIZE;
   int gr = sceGxmInitialize(&gp);
   if (gr < 0) {
     snprintf(out, out_len, "GXMINIT:0x%X", gr);
@@ -135,7 +155,7 @@ static int ime_prompt_token(char *out, unsigned out_len) {
     if (i) ok = 0;
   }
   sceImeDialogTerm();
-  sceGxmTerminate(); // free the 256KB param buffer, back to plain framebuffer
+  sceGxmTerminate(); // free the param buffer, back to plain framebuffer
   return ok;
 }
 #endif

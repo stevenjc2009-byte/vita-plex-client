@@ -4,7 +4,7 @@ project(vita-plex-client C)
 # Windows: cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/Users/steve/vita-dev/vitasdk/vitasdk/share/vita.toolchain.cmake -B build
 set(VITA_TITLEID "PLEX00001")
 set(VITA_TITLE "Plex Client")
-set(VITA_VERSION "01.10")
+set(VITA_VERSION "01.11")
 
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
