@@ -3,12 +3,14 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdarg.h>
 
 #ifdef __vita__
 #include <psp2/ctrl.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/sysmem.h>
 #include <psp2/kernel/threadmgr.h>
+#include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
 #include <psp2/ime_dialog.h>
 #include <psp2/apputil.h>
@@ -82,6 +84,22 @@ static void ui_footer(const char *s) {
   ui_center(s);
 }
 
+// File log for on-device diagnosis: ux0:data/plex-client/debug.log,
+// truncated at every boot. User copies it off via VitaShell USB/FTP.
+static SceUID logfd = -1;
+static void log_msg(const char *fmt, ...) {
+  if (logfd < 0) return;
+  char tmp[512];
+  unsigned t = sceKernelGetProcessTimeLow() / 1000; // ms since boot
+  int n = snprintf(tmp, sizeof(tmp), "[%u.%03u] ", t / 1000, t % 1000);
+  va_list ap;
+  va_start(ap, fmt);
+  n += vsnprintf(tmp + n, sizeof(tmp) - n - 2, fmt, ap);
+  va_end(ap);
+  tmp[n++] = '\n';
+  sceIoWrite(logfd, tmp, n);
+}
+
 // System keyboard prompt for pasting/typing the 20-char Plex token.
 // Used when plex.tv TLS is unreachable (old Vita SSL stack): the token
 // comes from Plex Web on a PC, everything after runs over plain LAN HTTP.
@@ -120,6 +138,9 @@ static int ime_prompt_token(char *out, unsigned out_len) {
   ui_bar("Sign in");
   ui_blank();
   ui_center("Opening keyboard...");
+  log_msg("ime enter type=%d mode=%d tbox=%d maxlen=%d opt=0x%X",
+    (int)p.type, (int)p.dialogMode, (int)p.textBoxMode,
+    (int)p.maxTextLength, (unsigned)p.option);
   // Common dialogs refuse to run unless libgxm is initialized
   // (SCE_COMMON_DIALOG_ERROR_GXM_IS_UNINITIALIZED = 0x80020436), and
   // the dialog framework stalls unless the app keeps presenting frames
@@ -135,6 +156,7 @@ static int ime_prompt_token(char *out, unsigned out_len) {
   gp.displayQueueCallbackDataSize = sizeof(gxm_cb_data);
   gp.parameterBufferSize = SCE_GXM_DEFAULT_PARAMETER_BUFFER_SIZE;
   int gr = sceGxmInitialize(&gp);
+  log_msg("ime sceGxmInitialize=0x%X", gr);
   if (gr < 0) {
     snprintf(out, out_len, "GXMINIT:0x%X", gr);
     return -2;
@@ -148,15 +170,19 @@ static int ime_prompt_token(char *out, unsigned out_len) {
   for (i = 0; i < 2; i++) {
     dblk[i] = sceKernelAllocMemBlock("gxm_disp",
       SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, 4 * 1024 * 544, NULL);
+    log_msg("ime memblock[%d]=0x%X", i, dblk[i]);
     if (dblk[i] < 0) break;
     sceKernelGetMemBlockBase(dblk[i], &dbase[i]);
-    sceGxmMapMemory(dbase[i], 4 * 1024 * 544,
+    int mr = sceGxmMapMemory(dbase[i], 4 * 1024 * 544,
       SCE_GXM_MEMORY_ATTRIB_READ | SCE_GXM_MEMORY_ATTRIB_WRITE);
+    log_msg("ime map[%d]=0x%X base=%p", i, mr, dbase[i]);
     memset(dbase[i], 0, 4 * 1024 * 544);
     sceGxmColorSurfaceInit(&dsurf[i], SCE_GXM_COLOR_FORMAT_A8B8G8R8,
       SCE_GXM_COLOR_SURFACE_LINEAR, SCE_GXM_COLOR_SURFACE_SCALE_NONE,
       SCE_GXM_OUTPUT_REGISTER_SIZE_32BIT, 960, 544, 1024, dbase[i]);
-    if (sceGxmSyncObjectCreate(&dsync[i]) < 0) { dsync[i] = NULL; break; }
+    int sr = sceGxmSyncObjectCreate(&dsync[i]);
+    log_msg("ime sync[%d]=0x%X", i, sr);
+    if (sr < 0) { dsync[i] = NULL; break; }
   }
   if (i < 2) {
     snprintf(out, out_len, "GXMDISP:0x%X",
@@ -164,22 +190,33 @@ static int ime_prompt_token(char *out, unsigned out_len) {
     goto ime_cleanup;
   }
   r = sceImeDialogInit(&p);
+  log_msg("ime sceImeDialogInit=0x%X", r);
   if (r < 0) {
     snprintf(out, out_len, "IMEINIT:0x%X", r);
     goto ime_cleanup;
   }
   // Present frames until the dialog finishes. Bounded so a stuck dialog
   // can never wedge the app again: 3600 swaps at ~33ms is about 2 min.
+  // Log every status change plus a heartbeat so the log shows exactly
+  // where a stuck run sits.
   i = 0;
-  while (sceImeDialogGetStatus() == SCE_COMMON_DIALOG_STATUS_RUNNING &&
-      i++ < 3600) {
-    sceGxmPadHeartbeat(&dsurf[back], dsync[back]);
+  int last_st = -99, hb = 0;
+  int st = sceImeDialogGetStatus();
+  log_msg("ime first status=%d", st);
+  while (st == SCE_COMMON_DIALOG_STATUS_RUNNING && i++ < 3600) {
+    int hr = sceGxmPadHeartbeat(&dsurf[back], dsync[back]);
     gxm_cb_data = dbase[back];
-    sceGxmDisplayQueueAddEntry(dsync[front], dsync[back], &gxm_cb_data);
+    int qr = sceGxmDisplayQueueAddEntry(dsync[front], dsync[back],
+      &gxm_cb_data);
+    if (hb++ % 300 == 0)
+      log_msg("ime wait i=%d heart=0x%X queue=0x%X", i, hr, qr);
     front = back;
     back = (back + 1) % 2;
     sceKernelDelayThread(33000);
+    st = sceImeDialogGetStatus();
+    if (st != last_st) { log_msg("ime status %d -> %d at i=%d", last_st, st, i); last_st = st; }
   }
+  log_msg("ime wait end i=%d status=%d", i, st);
   if (i >= 3600) {
     snprintf(out, out_len, "IME stuck - gave up after 2 min");
     sceImeDialogTerm();
@@ -188,8 +225,9 @@ static int ime_prompt_token(char *out, unsigned out_len) {
   {
     SceImeDialogResult res;
     memset(&res, 0, sizeof(res));
-    if (sceImeDialogGetResult(&res) == 0 &&
-        res.button == SCE_IME_DIALOG_BUTTON_ENTER) {
+    int gr2 = sceImeDialogGetResult(&res);
+    log_msg("ime getResult=0x%X button=%d", gr2, (int)res.button);
+    if (gr2 == 0 && res.button == SCE_IME_DIALOG_BUTTON_ENTER) {
       unsigned k = 0;
       while (k + 1 < out_len && buf[k] && k < 64 &&
           buf[k] >= 0x20 && buf[k] < 0x7F)
@@ -198,8 +236,10 @@ static int ime_prompt_token(char *out, unsigned out_len) {
       if (k) ok = 0;
     }
     sceImeDialogTerm();
+    log_msg("ime dialog termed");
   }
 ime_cleanup:
+  log_msg("ime cleanup ok=%d", ok);
   sceGxmTerminate();
   for (i = 0; i < 2; i++) {
     if (dsync[i]) { sceGxmSyncObjectDestroy(dsync[i]); dsync[i] = NULL; }
@@ -207,6 +247,7 @@ ime_cleanup:
     dbase[i] = NULL;
   }
   DBG_INIT(); // reclaim our text framebuffer after GXM teardown
+  log_msg("ime exit ok=%d out='%s'", ok, ok == 0 ? "<token>" : out);
   return ok;
 }
 #endif
@@ -215,6 +256,9 @@ int main(void) {
 #ifdef __vita__
   DBG_INIT();
   sceIoMkdir("ux0:data/plex-client", 0777);
+  logfd = sceIoOpen("ux0:data/plex-client/debug.log",
+    SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+  log_msg("boot v%s", APP_VERSION);
   sceSysmoduleLoadModule(SCE_SYSMODULE_IME);
   // Required before any system dialog (keyboard included).
   sceAppUtilInit(&(SceAppUtilInitParam){}, &(SceAppUtilBootParam){});
@@ -261,6 +305,8 @@ int main(void) {
     ui_blank();
     ui_center("Checking for updates...");
     int up = update_check(dl, sizeof(dl), tag, sizeof(tag));
+    log_msg("update_check=%d tag=%s", up,
+      up > 0 ? tag : "-");
     if (up > 0) {
       int choice = -1;
       // Draw once, then poll without repainting (see dirty flag below).
@@ -309,6 +355,8 @@ int main(void) {
     sceCtrlPeekBufferPositive(0, &pad, 1);
     int pressed = pad.buttons & ~old.buttons;
     old = pad;
+    if (pressed) log_msg("btn 0x%X scr %d pend %d", pressed, (int)s,
+      (int)pending);
     if (pad.buttons & SCE_CTRL_START) break;
 
     // ---- input: arm actions, never block here ----
@@ -408,6 +456,9 @@ int main(void) {
           snprintf(status, sizeof(status),
             "Code ready - enter it at plex.tv/link, then press X");
         } else {
+          log_msg("pin create fail HTTP %d err 0x%X ssl 0x%X/0x%X",
+            http_last_status(), http_last_error(),
+            http_last_ssl_err(), http_last_ssl_detail());
           snprintf(status, sizeof(status),
             "plex.tv fail HTTP %d err 0x%X ssl 0x%X/0x%X - tell me all 4",
             http_last_status(), http_last_error(),
