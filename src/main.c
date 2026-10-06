@@ -37,6 +37,7 @@
 #include "http.h"
 #include "player.h"
 #include "update.h"
+#include "gui.h"
 
 #ifndef __vita__
 static int host_demo(void);
@@ -384,15 +385,9 @@ int main(void) {
           status[0] = 0;
         }
       } else if (s == S_ITEMS) {
-        if ((pressed & SCE_CTRL_CROSS) && n_items > 0) {
-          if (cursor >= n_items) cursor = n_items - 1;
-          plex_build_vita_transcode_url(st.server, st.token,
-            items[cursor].key, hls, sizeof(hls));
-          player_play_hls(hls);
-          player_run_blocking();
-          ui_theme(); // player used its own framebuffer
-          ui_font_2x(); // player's screen restore resets the font to 1x
-        }
+        // The poster grid owns all input while visible (blocking call
+        // in render below): X-play/O-back live there, not here.
+        // O here only fires on the brief "(loading...)" frame.
         if (pressed & SCE_CTRL_CIRCLE) {
           s = S_SECTIONS;
           need_fetch = 1;
@@ -549,12 +544,32 @@ int main(void) {
       ui_status(status);
       ui_footer("Up/Down move   X open   O logout   START quits");
     } else if (s == S_ITEMS) {
-      if (need_fetch) pending = ACT_FETCH_ITEMS;
+      if (need_fetch) {
+        pending = ACT_FETCH_ITEMS;
+      } else if (n_items > 0) {
+        // Poster grid owns the screen until back/quit/play.
+        int sel = gui_browse(sections[sec_idx].title, items, n_items,
+          st.server, st.token);
+        if (sel == -2) break; // START: quit the app
+        if (sel >= 0) {
+          plex_build_vita_transcode_url(st.server, st.token,
+            items[sel].key, hls, sizeof(hls));
+          player_play_hls(hls);
+          player_run_blocking();
+        } else {
+          s = S_SECTIONS;
+          need_fetch = 1;
+          status[0] = 0;
+        }
+        ui_theme(); // grid + player used their own framebuffer
+        ui_font_2x();
+        dirty = 1;
+        sceKernelDelayThread(33000);
+        continue;
+      }
+      DBG_CLEAR();
       ui_bar(sections[sec_idx].title);
       ui_blank();
-      if (cursor >= n_items && n_items > 0) cursor = n_items - 1;
-      for (int i = 0; i < n_items && i < 20; i++)
-        ui_row(i == cursor, items[i].title);
       if (!n_items) ui_center("(loading...)");
       ui_status(status);
       ui_footer("Up/Down move   X play   O back   START quits");

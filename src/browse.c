@@ -26,13 +26,15 @@ int plex_parse_items(const char *xml, const char *tag,
     if (!p) break;
     const char *end = strchr(p, '>');
     if (!end) break;
-    char chunk[512];
+    char chunk[2048]; // <Video> tags carry dozens of attrs
     size_t len = (size_t)(end - p);
     if (len >= sizeof(chunk)) len = sizeof(chunk) - 1;
     memcpy(chunk, p, len);
     chunk[len] = 0;
     if (get_attr(chunk, "title", out[n].title, sizeof(out[n].title)) == 0 &&
         get_attr(chunk, "key", out[n].key, sizeof(out[n].key)) == 0) {
+      if (get_attr(chunk, "thumb", out[n].thumb, sizeof(out[n].thumb)) != 0)
+        out[n].thumb[0] = 0;
       n++;
     }
     p = end + 1;

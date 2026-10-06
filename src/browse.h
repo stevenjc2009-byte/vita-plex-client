@@ -10,6 +10,7 @@
 typedef struct {
   char title[BROWSE_TITLE_LEN];
   char key[BROWSE_KEY_LEN];
+  char thumb[BROWSE_KEY_LEN]; // may be empty: caller draws a tile
 } browse_item_t;
 
 // Returns count (0..max). Works for both Directory and Video tags.
