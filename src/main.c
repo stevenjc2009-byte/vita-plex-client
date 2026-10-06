@@ -148,19 +148,29 @@ static int ime_prompt_token(char *out, unsigned out_len) {
   // delay loop here wedges the app with the Vita itself fine. So: init
   // GXM exactly like the sample, swap a black buffer under the keyboard
   // overlay while it runs, then tear down and reclaim our framebuffer.
-  // Init like the official ime sample, but with the minimum 256KB
-  // parameter buffer: the full 16MB plus our text framebuffer exhausts
-  // the device's free CDRAM pages (0x80024309 on alloc). Real callback
-  // kept (NULL callback fails init with 0x805B0017).
+  // Init like the official ime sample (real callback: NULL fails with
+  // 0x805B0017), but negotiate the parameter buffer size at runtime: 16MB
+  // inits fine yet leaves no free CDRAM pages for display buffers
+  // (0x80024309), while 256KB fails init with 0x805B0017. Halve from 16MB
+  // down, first success wins, retrying only on DRIVER (param rejected).
   static void *gxm_cb_data = NULL;
   SceGxmInitializeParams gp;
   memset(&gp, 0, sizeof(gp));
   gp.displayQueueMaxPendingCount = 1;
   gp.displayQueueCallback = gxm_vsync_cb;
   gp.displayQueueCallbackDataSize = sizeof(gxm_cb_data);
-  gp.parameterBufferSize = 0x40000; // SDK minimum, saves ~16MB CDRAM
-  int gr = sceGxmInitialize(&gp);
-  log_msg("ime sceGxmInitialize=0x%X", gr);
+  static const unsigned gxm_try[] = {
+    16 * 1024 * 1024, 8 * 1024 * 1024, 4 * 1024 * 1024,
+    2 * 1024 * 1024, 1024 * 1024, 512 * 1024, 0x40000
+  };
+  int gr = -1;
+  unsigned ti;
+  for (ti = 0; ti < sizeof(gxm_try) / sizeof(gxm_try[0]); ti++) {
+    gp.parameterBufferSize = gxm_try[ti];
+    gr = sceGxmInitialize(&gp);
+    log_msg("ime sceGxmInitialize(%u)=0x%X", gxm_try[ti], gr);
+    if (gr == 0 || gr != 0x805B0017) break;
+  }
   if (gr < 0) {
     snprintf(out, out_len, "GXMINIT:0x%X", gr);
     return -2;
