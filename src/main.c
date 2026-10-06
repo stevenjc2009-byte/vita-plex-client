@@ -10,6 +10,7 @@
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/io/stat.h>
 #include <psp2/ime_dialog.h>
+#include <psp2/apputil.h>
 #include <psp2/sysmodule.h>
 #include "debugScreen.h"
 #define DBG_INIT() psvDebugScreenInit()
@@ -90,7 +91,8 @@ static int ime_prompt_token(char *out, unsigned out_len) {
   sceImeDialogParamInit(&p);
   p.inputMethod = 0;
   p.supportedLanguages = SCE_IME_LANGUAGE_ENGLISH;
-  p.type = SCE_IME_TYPE_BASIC_LATIN;
+  p.languagesForced = SCE_TRUE;
+  p.type = SCE_IME_TYPE_DEFAULT;
   p.option = SCE_IME_OPTION_NO_AUTO_CAPITALIZATION |
     SCE_IME_OPTION_NO_ASSISTANCE;
   p.dialogMode = SCE_IME_DIALOG_DIALOG_MODE_WITH_CANCEL;
@@ -99,7 +101,11 @@ static int ime_prompt_token(char *out, unsigned out_len) {
   p.maxTextLength = 64;
   p.initialText = buf;
   p.inputTextBuffer = buf;
-  if (sceImeDialogInit(&p) < 0) return -1;
+  int r = sceImeDialogInit(&p);
+  if (r < 0) {
+    snprintf(out, out_len, "IMEINIT:0x%X", r);
+    return -2; // caller shows the code instead of "cancelled"
+  }
   while (sceImeDialogGetStatus() == SCE_COMMON_DIALOG_STATUS_RUNNING)
     sceKernelDelayThread(50000);
   SceImeDialogResult res;
@@ -124,6 +130,9 @@ int main(void) {
   DBG_INIT();
   sceIoMkdir("ux0:data/plex-client", 0777);
   sceSysmoduleLoadModule(SCE_SYSMODULE_IME);
+  // Required before any system dialog (keyboard included).
+  sceAppUtilInit(&(SceAppUtilInitParam){}, &(SceAppUtilBootParam){});
+  sceCommonDialogSetConfigParam(&(SceCommonDialogConfigParam){});
   http_init();
   ui_theme();
 
@@ -219,13 +228,17 @@ int main(void) {
           if (pressed & SCE_CTRL_CROSS) pending = ACT_PIN_CREATE;
           if (pressed & SCE_CTRL_TRIANGLE) {
             char tok[128];
-            if (ime_prompt_token(tok, sizeof(tok)) == 0) {
+            int tr = ime_prompt_token(tok, sizeof(tok));
+            if (tr == 0) {
               snprintf(st.token, sizeof(st.token), "%s", tok);
               settings_save(&st);
               s = S_SECTIONS;
               need_fetch = 1;
               cursor = 0;
               snprintf(status, sizeof(status), "Token saved - loading libraries");
+            } else if (tr == -2) {
+              snprintf(status, sizeof(status), "Keyboard %s - tell me the code",
+                tok);
             } else {
               snprintf(status, sizeof(status), "Token entry cancelled");
             }
