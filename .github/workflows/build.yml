@@ -27,6 +27,7 @@ jobs:
           arm-vita-eabi-readelf -S build/vita-plex-client | head -40
 
       - name: Release VPK
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: build/*.vpk
