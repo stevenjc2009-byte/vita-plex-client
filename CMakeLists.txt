@@ -24,6 +24,10 @@ target_include_directories(${PROJECT_NAME} PRIVATE src)
 # Newer binutils emits RELRO segments that vita-elf-create can't map;
 # disable them to keep the classic text/data two-segment layout.
 target_link_options(${PROJECT_NAME} PRIVATE "LINKER:-z,norelro")
+# Segment 0 (code+rodata) must stay well under the 128KB boundary where
+# the data segment is pinned: optimize for size and drop unused sections.
+target_compile_options(${PROJECT_NAME} PRIVATE -Os -ffunction-sections -fdata-sections)
+target_link_options(${PROJECT_NAME} PRIVATE "LINKER:--gc-sections")
 target_link_libraries(${PROJECT_NAME}
   SceDisplay_stub
   SceCtrl_stub
