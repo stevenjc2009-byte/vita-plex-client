@@ -51,7 +51,7 @@ typedef enum { S_LOGIN, S_SECTIONS, S_ITEMS, S_PLAY } screen_t;
 #define C_ORANGE_BG "\033[48;2;229;160;13m"
 #define C_ORANGE_FG "\033[38;2;229;160;13m"
 #define C_BLACK_FG "\033[38;2;0;0;0m"
-#define UI_COLS 100
+#define UI_COLS 60 // 960px / 16px glyphs at the global 2x font
 
 static void ui_theme(void) { DBG_PRINT(C_BG C_FG); }
 
@@ -84,6 +84,20 @@ static void ui_footer(const char *s) {
   ui_center(s);
 }
 
+// Left-aligned list row with truncation: centered long titles looked
+// overlapped/ragged in browse photos. Cap at UI_COLS - 6 chars.
+static void ui_row(int selected, const char *title) {
+  char t[64];
+  snprintf(t, sizeof(t), "%s", title);
+  if ((int)strlen(t) > UI_COLS - 6) {
+    t[UI_COLS - 9] = 0;
+    strncat(t, "...", sizeof(t) - strlen(t) - 1);
+  }
+  if (selected) DBG_PRINT(C_ORANGE_FG);
+  DBG_PRINT("  %c %s\n", selected ? '>' : ' ', t);
+  if (selected) DBG_PRINT(C_FG);
+}
+
 // File log for on-device diagnosis: ux0:data/plex-client/debug.log,
 // truncated at every boot. User copies it off via VitaShell USB/FTP.
 static SceUID logfd = -1;
@@ -108,6 +122,40 @@ static void log_msg(const char *fmt, ...) {
 // starves video memory for display buffers (0x80024309), or stalls the
 // driver outright - every combination wedged or failed across v01.08-01.16.
 // This needs only sceCtrl (proven working: X responds), so it cannot hang.
+// Global 2x font: the stock 8x8 glyphs are unreadably small on the
+// 960x544 panel (login/browse photos). Double each pixel into a static
+// 8KB buffer (no heap: malloc failure silently kept 1x in v01.18) and
+// install 16x16 dims. Idempotent: call after every psvDebugScreenInit21,
+// including the player's restore, which resets the font to 1x.
+static unsigned char ui_glyphs[16 * 16 * 256 / 8];
+static PsvDebugScreenFont ui_fontstruct;
+static void ui_font_2x(void) {
+  PsvDebugScreenFont *src = psvDebugScreenGetFont();
+  if (src->width == 16) return; // already installed
+  if (src->width != 8) return; // unknown base font: leave it alone
+  ui_fontstruct.width = 16;
+  ui_fontstruct.height = 16;
+  ui_fontstruct.first = src->first;
+  ui_fontstruct.last = src->last;
+  ui_fontstruct.size_w = 16;
+  ui_fontstruct.size_h = 16;
+  ui_fontstruct.glyphs = ui_glyphs;
+  memset(ui_glyphs, 0, sizeof(ui_glyphs));
+  for (int g = src->first; g <= src->last; g++)
+    for (int y = 0; y < 8; y++)
+      for (int x = 0; x < 8; x++) {
+        int sbit = (g - src->first) * 64 + y * 8 + x;
+        int s = (src->glyphs[sbit / 8] >> (7 - (sbit % 8))) & 1;
+        if (!s) continue;
+        for (int dy = 0; dy < 2; dy++)
+          for (int dx = 0; dx < 2; dx++) {
+            int tbit = (g - src->first) * 256 + (2 * y + dy) * 16 + (2 * x + dx);
+            ui_glyphs[tbit / 8] |= (unsigned char)(1 << (7 - (tbit % 8)));
+          }
+      }
+  psvDebugScreenSetFont(&ui_fontstruct);
+}
+
 static int kb_prompt_token(char *out, unsigned out_len) {
   static const char *rows[] = {
     "abcdefghij", "klmnopqrst", "uvwxyzABCD", "EFGHIJKLMN",
@@ -121,47 +169,14 @@ static int kb_prompt_token(char *out, unsigned out_len) {
   SceCtrlData pad, old;
   memset(&old, 0, sizeof(old));
   log_msg("kb enter");
-  // Double-size glyphs: at 1x the grid is unreadably small. The scaler
-  // algorithm is proven exact-2x by tools/fontscale_test (host PASS, 0
-  // mismatched pixels over all 256 glyphs), but psvDebugScreenScaleFont2x
-  // mallocs ~8KB and a NULL return silently keeps the 1x font (v01.18
-  // photo). So double into a static buffer: no heap, cannot fail. The
-  // installed dims are logged as proof (expect 16x16).
-  static unsigned char kb_glyphs[16 * 16 * 256 / 8];
-  static PsvDebugScreenFont kb_fontstruct;
-  static int kb_font_ready = 0;
-  if (!kb_font_ready) {
-    PsvDebugScreenFont *src = psvDebugScreenGetFont();
-    kb_fontstruct.width = 16;
-    kb_fontstruct.height = 16;
-    kb_fontstruct.first = src->first;
-    kb_fontstruct.last = src->last;
-    kb_fontstruct.size_w = 16;
-    kb_fontstruct.size_h = 16;
-    kb_fontstruct.glyphs = kb_glyphs;
-    memset(kb_glyphs, 0, sizeof(kb_glyphs));
-    for (int g = src->first; g <= src->last; g++)
-      for (int y = 0; y < 8; y++)
-        for (int x = 0; x < 8; x++) {
-          int sbit = (g - src->first) * 64 + y * 8 + x;
-          int s = (src->glyphs[sbit / 8] >> (7 - (sbit % 8))) & 1;
-          if (!s) continue;
-          for (int dy = 0; dy < 2; dy++)
-            for (int dx = 0; dx < 2; dx++) {
-              int tbit = (g - src->first) * 256 + (2 * y + dy) * 16 + (2 * x + dx);
-              kb_glyphs[tbit / 8] |= (unsigned char)(1 << (7 - (tbit % 8)));
-            }
-        }
-    kb_font_ready = 1;
-  }
-  PsvDebugScreenFont *kb_prev = psvDebugScreenSetFont(&kb_fontstruct);
+  ui_font_2x(); // keyboard shares the global 2x font: no heap, no fail
   log_msg("kb font %dx%d", psvDebugScreenGetFont()->width,
     psvDebugScreenGetFont()->height);
   for (;;) {
     DBG_CLEAR();
     DBG_PRINT("\n  Enter Plex token\n\n");
-    DBG_PRINT("  Plex Web: play anything,\n");
-    DBG_PRINT("  copy X-Plex-Token from the address bar.\n\n");
+    DBG_PRINT("  PC: app.plex.tv, F12 Console,\n");
+    DBG_PRINT("  localStorage.myPlexAccessToken\n\n");
     char cur[80];
     snprintf(cur, sizeof(cur), "[ %s%s ]", tok, tlen < 64 ? "_" : "");
     DBG_PRINT(C_ORANGE_FG "  %s\n" C_FG "\n", cur);
@@ -191,7 +206,6 @@ static int kb_prompt_token(char *out, unsigned out_len) {
     }
     if (pressed & SCE_CTRL_START) {
       log_msg("kb cancel");
-      psvDebugScreenSetFont(kb_prev);
       return -1;
     }
     // Last row ("89-_") is short: clamp into it, and never emit its
@@ -210,7 +224,6 @@ static int kb_prompt_token(char *out, unsigned out_len) {
       if (!tlen) continue;
       snprintf(out, out_len, "%s", tok);
       log_msg("kb done len=%u", tlen);
-      psvDebugScreenSetFont(kb_prev);
       return 0;
     }
   }
@@ -230,6 +243,9 @@ int main(void) {
   sceCommonDialogSetConfigParam(&(SceCommonDialogConfigParam){});
   http_init();
   ui_theme();
+  ui_font_2x();
+  log_msg("ui font %dx%d", psvDebugScreenGetFont()->width,
+    psvDebugScreenGetFont()->height);
 
   settings_t st;
   settings_load(&st);
@@ -375,6 +391,7 @@ int main(void) {
           player_play_hls(hls);
           player_run_blocking();
           ui_theme(); // player used its own framebuffer
+          ui_font_2x(); // player's screen restore resets the font to 1x
         }
         if (pressed & SCE_CTRL_CIRCLE) {
           s = S_SECTIONS;
@@ -501,8 +518,8 @@ int main(void) {
         ui_blank();
         ui_center("[ X ]  Get link code");
         ui_blank();
-        ui_center("No code? On your PC open Plex Web, play anything,");
-        ui_center("copy X-Plex-Token from the address bar, then:");
+        ui_center("No code? PC: app.plex.tv, F12 Console, type");
+        ui_center("localStorage.myPlexAccessToken, then:");
         ui_blank();
         ui_center("[ /\\ ]  Enter token manually");
       } else {
@@ -526,14 +543,8 @@ int main(void) {
       ui_bar("Libraries");
       ui_blank();
       if (cursor >= n_sec && n_sec > 0) cursor = n_sec - 1;
-      for (int i = 0; i < n_sec && i < 20; i++) {
-        char line[160];
-        snprintf(line, sizeof(line), "%c  %s", i == cursor ? '>' : ' ',
-          sections[i].title);
-        if (i == cursor) DBG_PRINT(C_ORANGE_FG);
-        ui_center(line);
-        if (i == cursor) DBG_PRINT(C_FG);
-      }
+      for (int i = 0; i < n_sec && i < 20; i++)
+        ui_row(i == cursor, sections[i].title);
       if (!n_sec) ui_center("(loading...)");
       ui_status(status);
       ui_footer("Up/Down move   X open   O logout   START quits");
@@ -542,14 +553,8 @@ int main(void) {
       ui_bar(sections[sec_idx].title);
       ui_blank();
       if (cursor >= n_items && n_items > 0) cursor = n_items - 1;
-      for (int i = 0; i < n_items && i < 20; i++) {
-        char line[160];
-        snprintf(line, sizeof(line), "%c  %s", i == cursor ? '>' : ' ',
-          items[i].title);
-        if (i == cursor) DBG_PRINT(C_ORANGE_FG);
-        ui_center(line);
-        if (i == cursor) DBG_PRINT(C_FG);
-      }
+      for (int i = 0; i < n_items && i < 20; i++)
+        ui_row(i == cursor, items[i].title);
       if (!n_items) ui_center("(loading...)");
       ui_status(status);
       ui_footer("Up/Down move   X play   O back   START quits");
