@@ -121,19 +121,19 @@ static int kb_prompt_token(char *out, unsigned out_len) {
   SceCtrlData pad, old;
   memset(&old, 0, sizeof(old));
   log_msg("kb enter");
+  // Double-size glyphs: at 1x the grid is unreadably small. Scaled once
+  // and reused; restored on every exit below.
+  static PsvDebugScreenFont *kb_font = NULL;
+  if (!kb_font) kb_font = psvDebugScreenScaleFont2x(psvDebugScreenGetFont());
+  PsvDebugScreenFont *kb_prev = psvDebugScreenSetFont(kb_font);
   for (;;) {
     DBG_CLEAR();
-    ui_bar("Enter Plex token");
-    ui_blank();
-    ui_center("Find it in Plex Web: play anything,");
-    ui_center("copy X-Plex-Token from the address bar.");
-    ui_blank();
+    DBG_PRINT("\n  Enter Plex token\n\n");
+    DBG_PRINT("  Plex Web: play anything,\n");
+    DBG_PRINT("  copy X-Plex-Token from the address bar.\n\n");
     char cur[80];
     snprintf(cur, sizeof(cur), "[ %s%s ]", tok, tlen < 64 ? "_" : "");
-    DBG_PRINT(C_ORANGE_FG);
-    ui_center(cur);
-    DBG_PRINT(C_FG);
-    ui_blank();
+    DBG_PRINT(C_ORANGE_FG "  %s\n" C_FG "\n", cur);
     for (int i = 0; i < NROWS; i++) {
       char line[128];
       int o = 0;
@@ -145,12 +145,11 @@ static int kb_prompt_token(char *out, unsigned out_len) {
       }
       line[o] = 0;
       if (i == r) DBG_PRINT(C_ORANGE_FG);
-      ui_center(line);
+      DBG_PRINT("  %s\n", line);
       if (i == r) DBG_PRINT(C_FG);
     }
-    ui_blank();
-    ui_center("D-pad move   X pick   O delete");
-    ui_center("/\\ done   START cancel");
+    DBG_PRINT("\n  D-pad move   X pick   O delete\n");
+    DBG_PRINT("  /\\ done   START cancel\n");
     // Wait for one button press, no auto-repeat (token entry is short).
     int pressed = 0;
     while (!pressed) {
@@ -159,7 +158,11 @@ static int kb_prompt_token(char *out, unsigned out_len) {
       old = pad;
       sceKernelDelayThread(50000);
     }
-    if (pressed & SCE_CTRL_START) { log_msg("kb cancel"); return -1; }
+    if (pressed & SCE_CTRL_START) {
+      log_msg("kb cancel");
+      psvDebugScreenSetFont(kb_prev);
+      return -1;
+    }
     if (pressed & SCE_CTRL_UP) r = (r + NROWS - 1) % NROWS;
     if (pressed & SCE_CTRL_DOWN) r = (r + 1) % NROWS;
     if (pressed & SCE_CTRL_LEFT) c = (c + NCOLS - 1) % NCOLS;
@@ -172,6 +175,7 @@ static int kb_prompt_token(char *out, unsigned out_len) {
       if (!tlen) continue;
       snprintf(out, out_len, "%s", tok);
       log_msg("kb done len=%u", tlen);
+      psvDebugScreenSetFont(kb_prev);
       return 0;
     }
   }
