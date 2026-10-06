@@ -121,11 +121,42 @@ static int kb_prompt_token(char *out, unsigned out_len) {
   SceCtrlData pad, old;
   memset(&old, 0, sizeof(old));
   log_msg("kb enter");
-  // Double-size glyphs: at 1x the grid is unreadably small. Scaled once
-  // and reused; restored on every exit below.
-  static PsvDebugScreenFont *kb_font = NULL;
-  if (!kb_font) kb_font = psvDebugScreenScaleFont2x(psvDebugScreenGetFont());
-  PsvDebugScreenFont *kb_prev = psvDebugScreenSetFont(kb_font);
+  // Double-size glyphs: at 1x the grid is unreadably small. The scaler
+  // algorithm is proven exact-2x by tools/fontscale_test (host PASS, 0
+  // mismatched pixels over all 256 glyphs), but psvDebugScreenScaleFont2x
+  // mallocs ~8KB and a NULL return silently keeps the 1x font (v01.18
+  // photo). So double into a static buffer: no heap, cannot fail. The
+  // installed dims are logged as proof (expect 16x16).
+  static unsigned char kb_glyphs[16 * 16 * 256 / 8];
+  static PsvDebugScreenFont kb_fontstruct;
+  static int kb_font_ready = 0;
+  if (!kb_font_ready) {
+    PsvDebugScreenFont *src = psvDebugScreenGetFont();
+    kb_fontstruct.width = 16;
+    kb_fontstruct.height = 16;
+    kb_fontstruct.first = src->first;
+    kb_fontstruct.last = src->last;
+    kb_fontstruct.size_w = 16;
+    kb_fontstruct.size_h = 16;
+    kb_fontstruct.glyphs = kb_glyphs;
+    memset(kb_glyphs, 0, sizeof(kb_glyphs));
+    for (int g = src->first; g <= src->last; g++)
+      for (int y = 0; y < 8; y++)
+        for (int x = 0; x < 8; x++) {
+          int sbit = (g - src->first) * 64 + y * 8 + x;
+          int s = (src->glyphs[sbit / 8] >> (7 - (sbit % 8))) & 1;
+          if (!s) continue;
+          for (int dy = 0; dy < 2; dy++)
+            for (int dx = 0; dx < 2; dx++) {
+              int tbit = (g - src->first) * 256 + (2 * y + dy) * 16 + (2 * x + dx);
+              kb_glyphs[tbit / 8] |= (unsigned char)(1 << (7 - (tbit % 8)));
+            }
+        }
+    kb_font_ready = 1;
+  }
+  PsvDebugScreenFont *kb_prev = psvDebugScreenSetFont(&kb_fontstruct);
+  log_msg("kb font %dx%d", psvDebugScreenGetFont()->width,
+    psvDebugScreenGetFont()->height);
   for (;;) {
     DBG_CLEAR();
     DBG_PRINT("\n  Enter Plex token\n\n");
@@ -163,12 +194,16 @@ static int kb_prompt_token(char *out, unsigned out_len) {
       psvDebugScreenSetFont(kb_prev);
       return -1;
     }
-    if (pressed & SCE_CTRL_UP) r = (r + NROWS - 1) % NROWS;
-    if (pressed & SCE_CTRL_DOWN) r = (r + 1) % NROWS;
+    // Last row ("89-_") is short: clamp into it, and never emit its
+    // padding cells (rows[r][c] would be NUL and truncate the token).
+    int rowlen = (int)strlen(rows[r]);
+    if (c >= rowlen) c = rowlen - 1;
+    if (pressed & SCE_CTRL_UP) { r = (r + NROWS - 1) % NROWS; rowlen = (int)strlen(rows[r]); if (c >= rowlen) c = rowlen - 1; }
+    if (pressed & SCE_CTRL_DOWN) { r = (r + 1) % NROWS; rowlen = (int)strlen(rows[r]); if (c >= rowlen) c = rowlen - 1; }
     if (pressed & SCE_CTRL_LEFT) c = (c + NCOLS - 1) % NCOLS;
     if (pressed & SCE_CTRL_RIGHT) c = (c + 1) % NCOLS;
     if ((pressed & SCE_CTRL_CIRCLE) && tlen > 0) tok[--tlen] = 0;
-    if ((pressed & SCE_CTRL_CROSS) && tlen + 1 < sizeof(tok) &&
+    if ((pressed & SCE_CTRL_CROSS) && rows[r][c] && tlen + 1 < sizeof(tok) &&
         tlen + 1 < out_len)
       { tok[tlen++] = rows[r][c]; tok[tlen] = 0; }
     if (pressed & SCE_CTRL_TRIANGLE) {
