@@ -11,6 +11,7 @@
 #include <psp2/io/stat.h>
 #include <psp2/ime_dialog.h>
 #include <psp2/apputil.h>
+#include <psp2/gxm.h>
 #include <psp2/sysmodule.h>
 #include "debugScreen.h"
 #define DBG_INIT() psvDebugScreenInit()
@@ -101,8 +102,21 @@ static int ime_prompt_token(char *out, unsigned out_len) {
   p.maxTextLength = 64;
   p.initialText = buf;
   p.inputTextBuffer = buf;
+  // Common dialogs refuse to run unless libgxm is initialized
+  // (SCE_COMMON_DIALOG_ERROR_GXM_IS_UNINITIALIZED = 0x80020436).
+  // Init-only: no display queue, our debugScreen framebuffer stays up.
+  SceGxmInitializeParams gp;
+  memset(&gp, 0, sizeof(gp));
+  gp.displayQueueMaxPendingCount = 1;
+  gp.parameterBufferSize = 0x40000; // SDK minimum
+  int gr = sceGxmInitialize(&gp);
+  if (gr < 0) {
+    snprintf(out, out_len, "GXMINIT:0x%X", gr);
+    return -2;
+  }
   int r = sceImeDialogInit(&p);
   if (r < 0) {
+    sceGxmTerminate();
     snprintf(out, out_len, "IMEINIT:0x%X", r);
     return -2; // caller shows the code instead of "cancelled"
   }
@@ -121,6 +135,7 @@ static int ime_prompt_token(char *out, unsigned out_len) {
     if (i) ok = 0;
   }
   sceImeDialogTerm();
+  sceGxmTerminate(); // free the 256KB param buffer, back to plain framebuffer
   return ok;
 }
 #endif
