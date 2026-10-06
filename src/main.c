@@ -560,8 +560,7 @@ int main(void) {
         } else {
           s = S_SECTIONS;
           need_fetch = 1;
-          snprintf(status, sizeof(status),
-            "Poster screen failed - see debug.log fb line");
+          status[0] = 0; // -1 is O/back only: alloc cannot fail anymore
         }
         ui_theme(); // grid + player used their own framebuffer
         ui_font_2x();

@@ -631,6 +631,14 @@ PsvDebugScreenFont *psvDebugScreenGetFont(void) {
 }
 
 /*
+* Return the scanout framebuffer base (already on display).
+* Lets other screens reuse it when their own CDRAM alloc fails.
+*/
+void *psvDebugScreenGetBase(void) {
+	return base;
+}
+
+/*
 * Set font
 */
 PsvDebugScreenFont *psvDebugScreenSetFont(PsvDebugScreenFont *font) {

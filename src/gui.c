@@ -68,6 +68,7 @@ static void gui_log(const char *fmt, ...) {
 
 static SceUID g_fbid = -1;
 static unsigned int *g_fb = NULL;
+static int g_shared = 0; // 1: drawing into debugScreen's scanout buffer
 
 // Boot-time framebuffer grab: CDRAM fragments as net/ssl/player blocks
 // come and go, so claim our 2MB while the heap is pristine. Failure
@@ -89,9 +90,19 @@ void gui_fb_early(void) {
   } else {
     gui_log("gui fb early ALLOC FAIL block=0x%X", g_fbid);
   }
+  if (!g_fb) {
+    // Last resort: draw into debugScreen's own scanout buffer (same
+    // 960 pitch, already on display). Kills the alloc-fail kick-back.
+    g_fb = (unsigned int *)psvDebugScreenGetBase();
+    if (g_fb) {
+      g_shared = 1;
+      gui_log("gui fb SHARED base=%p", g_fb);
+    }
+  }
 }
 
 static void present(void) {
+  if (g_shared) return; // buffer already on display: loop waits vblank
   SceDisplayFrameBuf fb;
   memset(&fb, 0, sizeof(fb));
   fb.size = sizeof(fb);
@@ -231,9 +242,8 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
     // Scanout needs CDRAM (physically contiguous): malloc'd heap
     // shows as a white screen (v01.24 photo). Same recipe debugScreen
     // itself uses. ~2MB fits; 16MB GXM blocks did NOT (01.08-16).
-    // Lazy fallback if the boot-time grab never ran; a NULL here
-    // returns -1 and main.c prints the reason (v01.25: silent -1
-    // looked like a "kick back" to the Libraries screen).
+    // Lazy fallback if the boot-time grab never ran. gui_fb_early
+    // never leaves g_fb NULL unless debugScreen itself is gone.
     gui_fb_early();
     gui_log("gui fb lazy block=0x%X base=%p", g_fbid, g_fb);
     if (!g_fb) return -1;

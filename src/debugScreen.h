@@ -50,6 +50,7 @@ void psvDebugScreenGetCoordsXY(int *x, int *y);
 void psvDebugScreenSetCoordsXY(int *x, int *y);
 PsvDebugScreenFont *psvDebugScreenGetFont(void);
 PsvDebugScreenFont *psvDebugScreenSetFont(PsvDebugScreenFont *font);
+void *psvDebugScreenGetBase(void); // scanout framebuffer base or NULL
 PsvDebugScreenFont *psvDebugScreenScaleFont2x(PsvDebugScreenFont *source_font);
 #ifdef __cplusplus
 }
