@@ -158,6 +158,13 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
     if (!g_fb) return -1;
   }
   sceIoMkdir("ux0:data/plex-client/art", 0777);
+  // Paint before any blocking thumb fetch: first entry would sit on
+  // uninitialized pixels for seconds while 10 posters download.
+  rect(0, 0, FB_W, FB_H, C_BG);
+  rect(0, 0, FB_W, 48, C_ORANGE);
+  draw_text_trunc(title, 16, 16, 40, C_BLACK);
+  draw_text("Loading art...", 16, 120, C_WHITE);
+  present();
 
   int cursor = 0, page = 0, dirty = 1, art_page = -1;
   SceCtrlData pad, old;
