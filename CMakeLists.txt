@@ -21,6 +21,9 @@ add_executable(${PROJECT_NAME}
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE src)
+# Newer binutils emits RELRO segments that vita-elf-create can't map;
+# disable them to keep the classic text/data two-segment layout.
+target_link_options(${PROJECT_NAME} PRIVATE "LINKER:-z,norelro")
 target_link_libraries(${PROJECT_NAME}
   SceDisplay_stub
   SceCtrl_stub
