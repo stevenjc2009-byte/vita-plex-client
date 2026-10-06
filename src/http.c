@@ -101,10 +101,14 @@ static void set_plex_headers(int tmpl, const char *client_id,
 
 static int run(const char *url, const char *client_id, const char *accept,
     int method, char *body, unsigned body_len) {
-  if (body_len) body[0] = 0;
+  if (body && body_len) body[0] = 0;
   int code = -1, tmpl = -1, conn = -1, req = -1, r;
   unsigned used = 0;
+  last_status = 0;
   last_error = 0;
+  last_ssl_err = 0;
+  last_ssl_detail = 0;
+  if (!body || !body_len) { last_error = -1; return -1; }
 
   tmpl = sceHttpCreateTemplate("PlexVita/1.0", SCE_HTTP_VERSION_1_1, SCE_TRUE);
   if (tmpl < 0) { last_error = tmpl; goto out; }
@@ -137,7 +141,12 @@ static int run(const char *url, const char *client_id, const char *accept,
   if (status < 200 || status >= 300) goto out;
 
   for (;;) {
-    if (used + 1024 >= body_len) break;
+    if (used == body_len - 1) {
+      char extra;
+      int n = sceHttpReadData(req, &extra, 1);
+      if (n != 0) { last_error = n < 0 ? n : -1; goto out; }
+      break;
+    }
     int n = sceHttpReadData(req, body + used, body_len - used - 1);
     if (n < 0) { last_error = n; goto out; }
     if (n == 0) break;
@@ -147,6 +156,7 @@ static int run(const char *url, const char *client_id, const char *accept,
   code = 0;
 
 out:
+  if (code < 0 && body_len) body[0] = 0;
   if (req >= 0) sceHttpDeleteRequest(req);
   if (conn >= 0) sceHttpDeleteConnection(conn);
   if (tmpl >= 0) sceHttpDeleteTemplate(tmpl);
@@ -169,13 +179,16 @@ int http_download(const char *url, const char *path,
   static char chunk[8192];
   unsigned received = 0, total = 0;
   unsigned long long len64 = 0;
+  int have_length = 0;
+  last_status = last_error = last_ssl_err = 0;
+  last_ssl_detail = 0;
 
   tmpl = sceHttpCreateTemplate("PlexVita/1.0", SCE_HTTP_VERSION_1_1, SCE_TRUE);
-  if (tmpl < 0) goto out;
+  if (tmpl < 0) { last_error = tmpl; goto out; }
   conn = sceHttpCreateConnectionWithURL(tmpl, url, SCE_TRUE);
-  if (conn < 0) goto out;
+  if (conn < 0) { last_error = conn; goto out; }
   req = sceHttpCreateRequestWithURL(conn, SCE_HTTP_METHOD_GET, url, 0);
-  if (req < 0) goto out;
+  if (req < 0) { last_error = req; goto out; }
   // Release assets 302-redirect to object storage.
   sceHttpSetAutoRedirect(req, 1);
   sceHttpSetResolveTimeOut(req, 10 * 1000 * 1000);
@@ -183,28 +196,39 @@ int http_download(const char *url, const char *path,
   sceHttpSetSendTimeOut(req, 15 * 1000 * 1000);
   sceHttpSetRecvTimeOut(req, 20 * 1000 * 1000);
 
-  if (sceHttpSendRequest(req, NULL, 0) < 0) goto out;
+  r = sceHttpSendRequest(req, NULL, 0);
+  if (r < 0) { last_error = r; goto out; }
   int status = 0;
-  if (sceHttpGetStatusCode(req, &status) < 0) goto out;
+  r = sceHttpGetStatusCode(req, &status);
+  if (r < 0) { last_error = r; goto out; }
+  last_status = status;
   if (status != 200) goto out;
-  if (sceHttpGetResponseContentLength(req, &len64) == 0)
+  if (sceHttpGetResponseContentLength(req, &len64) == 0) {
+    if (len64 > 0xFFFFFFFFu) { last_error = -1; goto out; }
     total = (unsigned)len64;
+    have_length = 1;
+  }
 
   fd = sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
-  if (fd < 0) goto out;
+  if (fd < 0) { last_error = fd; goto out; }
 
   for (;;) {
     r = sceHttpReadData(req, chunk, sizeof(chunk));
-    if (r < 0) goto out;
+    if (r < 0) { last_error = r; goto out; }
     if (r == 0) break;
-    if (sceIoWrite(fd, chunk, r) != r) goto out;
+    int wrote = sceIoWrite(fd, chunk, r);
+    if (wrote != r) { last_error = wrote < 0 ? wrote : -1; goto out; }
     received += (unsigned)r;
     if (progress_cb) progress_cb(received, total);
   }
+  if (have_length && received != total) { last_error = -1; goto out; }
   code = 0;
 
 out:
-  if (fd >= 0) sceIoClose(fd);
+  if (fd >= 0) {
+    sceIoClose(fd);
+    if (code < 0) sceIoRemove(path); // never cache a partial poster/VPK
+  }
   if (req >= 0) sceHttpDeleteRequest(req);
   if (conn >= 0) sceHttpDeleteConnection(conn);
   if (tmpl >= 0) sceHttpDeleteTemplate(tmpl);

@@ -1,8 +1,10 @@
 #include "settings.h"
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef __vita__
+#include <psp2/kernel/rng.h>
 #define CONFIG_PATH "ux0:data/plex-client/config.ini"
 #else
 #define CONFIG_PATH "config.ini"
@@ -16,7 +18,11 @@ void settings_defaults(settings_t *s) {
 void settings_ensure_client_id(settings_t *s) {
   if (s->client_id[0]) return;
   // Simple pseudo-UUID; uniqueness only matters per Plex account.
-  static unsigned seed = 0x12345678;
+  static unsigned seed;
+#ifdef __vita__
+  if (sceKernelGetRandomNumber(&seed, sizeof(seed)) < 0)
+#endif
+    seed ^= (unsigned)time(NULL) ^ (unsigned)clock();
   seed = seed * 1664525u + 1013904223u;
   snprintf(s->client_id, sizeof(s->client_id),
     "vita-%08x-4b21-plex", seed);
@@ -24,10 +30,12 @@ void settings_ensure_client_id(settings_t *s) {
 
 int settings_load(settings_t *s) {
   settings_defaults(s);
+  settings_ensure_client_id(s);
   FILE *f = fopen(CONFIG_PATH, "r");
   if (!f) return -1;
   char line[256];
   while (fgets(line, sizeof(line), f)) {
+    line[strcspn(line, "\r\n")] = 0;
     if (sscanf(line, "server=%127[^\n]", s->server) == 1) continue;
     if (sscanf(line, "token=%127[^\n]", s->token) == 1) continue;
     if (sscanf(line, "client_id=%39[^\n]", s->client_id) == 1) continue;
@@ -45,8 +53,8 @@ int settings_load(settings_t *s) {
 int settings_save(const settings_t *s) {
   FILE *f = fopen(CONFIG_PATH, "w");
   if (!f) return -1;
-  fprintf(f, "server=%s\ntoken=%s\nclient_id=%s\n",
+  int r = fprintf(f, "server=%s\ntoken=%s\nclient_id=%s\n",
     s->server, s->token, s->client_id);
-  fclose(f);
-  return 0;
+  int closed = fclose(f);
+  return r < 0 || closed != 0 ? -1 : 0;
 }

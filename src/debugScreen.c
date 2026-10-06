@@ -421,11 +421,21 @@ int psvDebugScreenInit() {
 	initialized = 1;
 	return 0; // avoid linking non-initializer (prx) with sceDisplay/sceMemory
 #else
-	mutex = sceKernelCreateMutex("log_mutex", 0, 0, NULL);
-	displayblock = sceKernelAllocMemBlock("display", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, (SCREEN_FB_SIZE), NULL);
-	if (displayblock < 0)
-		return displayblock;
-	sceKernelGetMemBlockBase(displayblock, (void**)&base);
+	if (!initialized) {
+		mutex = sceKernelCreateMutex("log_mutex", 0, 0, NULL);
+		if (mutex < 0) return mutex;
+		displayblock = sceKernelAllocMemBlock("display", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, (SCREEN_FB_SIZE), NULL);
+		if (displayblock < 0) {
+			sceKernelDeleteMutex(mutex);
+			return displayblock;
+		}
+		int r = sceKernelGetMemBlockBase(displayblock, (void**)&base);
+		if (r < 0) {
+			sceKernelFreeMemBlock(displayblock);
+			sceKernelDeleteMutex(mutex);
+			return r;
+		}
+	}
 	SceDisplayFrameBuf frame = { sizeof(frame), base, (SCREEN_FB_WIDTH), 0, (SCREEN_WIDTH), (SCREEN_HEIGHT) };
 	initialized = 1;
 	return sceDisplaySetFrameBuf(&frame, SCE_DISPLAY_SETBUF_NEXTFRAME);

@@ -1,9 +1,26 @@
 // Self-updater implementation. Release metadata comes from the GitHub
 // API; the asset URL 302-redirects, so the download enables auto-redirect.
 
+#include "update.h"
+#include "plex_auth.h"
+#include <ctype.h>
+#include <stdio.h>
+#include <string.h>
+
+int update_version_newer(const char *candidate, const char *current) {
+  unsigned a, b, c, d;
+  char tail;
+  if (!candidate || !current) return 0;
+  if (*candidate == 'v') candidate++;
+  if (*current == 'v') current++;
+  if (!isdigit((unsigned char)*candidate) || !isdigit((unsigned char)*current)) return 0;
+  if (sscanf(candidate, "%u.%u%c", &a, &b, &tail) != 2 ||
+      sscanf(current, "%u.%u%c", &c, &d, &tail) != 2) return 0;
+  return a > c || (a == c && b > d);
+}
+
 #ifdef __vita__
 
-#include "update.h"
 #include "http.h"
 
 #include <psp2/io/fcntl.h>
@@ -11,25 +28,6 @@
 #include <psp2/promoterutil.h>
 #include <stdio.h>
 #include <string.h>
-
-static int extract_str(const char *json, const char *key,
-    char *out, unsigned out_len) {
-  char pat[64];
-  snprintf(pat, sizeof(pat), "\"%s\"", key);
-  const char *p = strstr(json, pat);
-  if (!p) return -1;
-  p = strchr(p + strlen(pat), ':');
-  if (!p) return -1;
-  p++;
-  while (*p == ' ' || *p == '"') {
-    if (*p == '"') { p++; break; }
-    p++;
-  }
-  unsigned i = 0;
-  while (*p && *p != '"' && i + 1 < out_len) out[i++] = *p++;
-  out[i] = 0;
-  return i ? 0 : -1;
-}
 
 int update_check(char *dl_url_out, unsigned url_len,
     char *tag_out, unsigned tag_len) {
@@ -40,13 +38,18 @@ int update_check(char *dl_url_out, unsigned url_len,
   if (http_get(url, "PlexVita", "application/vnd.github+json",
         body, sizeof(body)) != 0)
     return -1;
-  if (extract_str(body, "tag_name", tag, sizeof(tag)) != 0) return -1;
-  if (extract_str(body, "browser_download_url",
-        dl_url_out, url_len) != 0)
-    return -1;
-  const char *v = tag[0] == 'v' ? tag + 1 : tag;
+  if (plex_json_string(body, "tag_name", tag, sizeof(tag)) != 0) return -1;
   if (tag_out) snprintf(tag_out, tag_len, "%s", tag);
-  return strcmp(v, APP_VERSION) != 0 ? 1 : 0;
+  if (!update_version_newer(tag, APP_VERSION)) return 0;
+  const char *p = body;
+  while ((p = strstr(p, "\"browser_download_url\"")) != NULL) {
+    if (plex_json_string(p, "browser_download_url", dl_url_out, url_len) == 0) {
+      size_t n = strlen(dl_url_out);
+      if (n > 4 && !strcmp(dl_url_out + n - 4, ".vpk")) return 1;
+    }
+    p++;
+  }
+  return -1;
 }
 
 int update_download(const char *dl_url,

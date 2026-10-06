@@ -36,6 +36,8 @@ static void plog(const char *fmt, ...) {
   va_start(ap, fmt);
   n = vsnprintf(tmp, sizeof(tmp) - 2, fmt, ap);
   va_end(ap);
+  if (n < 0) return;
+  if (n > (int)sizeof(tmp) - 3) n = sizeof(tmp) - 3;
   tmp[n++] = '\n';
   sceIoWrite(p_log, tmp, (SceSize)n);
 }
@@ -48,6 +50,8 @@ void psvDebugScreenInit(void);
 static SceAvPlayerHandle handle = -1;
 static volatile int stop_flag = 0;
 static volatile int audio_port = -1;
+static SceUID audio_tid = -1;
+static int av_loaded;
 
 // 960x544x32bpp scanout buffer. Must be CDRAM (physically contiguous):
 // malloc'd heap is not scanout-capable and shows white (gui v01.24).
@@ -64,7 +68,7 @@ static int clamp8(int v) {
 // BT.601 integer math, 2 pixels per loop. Any source size is
 // nearest-neighbor scaled and centered on the 960x544 screen.
 static void blit_yvu420(const unsigned char *p, unsigned w, unsigned h) {
-  if (!p || !w || !h) return;
+  if (!p || !w || !h || (w & 1) || (h & 1)) return;
   unsigned out_w = w > FB_W ? FB_W : w;
   unsigned out_h = h > FB_H ? FB_H : h;
   unsigned off_x = (FB_W - out_w) / 2;
@@ -170,23 +174,29 @@ static int audio_thread(SceSize argc, void *argv) {
 }
 
 int player_play_hls(const char *hls_url) {
-  int r = sceSysmoduleLoadModule(SCE_SYSMODULE_AVPLAYER);
-  if (r < 0) { plog("play sysmod FAIL r=0x%X", r); return r; }
+  player_stop();
+  int r = 0;
+  if (!av_loaded) {
+    r = sceSysmoduleLoadModule(SCE_SYSMODULE_AVPLAYER);
+    if (r < 0) { plog("play sysmod FAIL r=0x%X", r); return r; }
+    av_loaded = 1;
+  }
 
   SceAvPlayerInitData init;
   memset(&init, 0, sizeof(init));
-  init.autoStart = SCE_TRUE;
+  init.autoStart = SCE_FALSE;
   init.debugLevel = 0;
 
   handle = sceAvPlayerInit(&init);
   if (handle < 0) { plog("play init FAIL r=0x%X", handle); return handle; }
 
   r = sceAvPlayerAddSource(handle, hls_url);
-  plog("play addsrc r=0x%X %.80s", r, hls_url);
-  if (r < 0) return r;
+  plog("play addsrc r=0x%X", r); // URLs contain the private Plex token
+  if (r < 0) { player_stop(); return r; }
 
   r = sceAvPlayerStart(handle);
   plog("play start r=0x%X", r);
+  if (r < 0) player_stop();
   return r;
 }
 
@@ -203,7 +213,7 @@ int player_run_blocking(void) {
   stop_flag = 0;
   fb_block = sceKernelAllocMemBlock("plex_video",
     SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
-    FB_W * FB_H * sizeof(*framebuf), NULL);
+    2 * 1024 * 1024, NULL); // CDRAM sizes must be 256KB aligned
   if (fb_block >= 0)
     sceKernelGetMemBlockBase(fb_block, (void **)&framebuf);
   if (!framebuf) {
@@ -213,12 +223,9 @@ int player_run_blocking(void) {
   }
   memset(framebuf, 0, FB_W * FB_H * sizeof(*framebuf));
 
-  SceUID atid = sceKernelCreateThread("plex_audio", audio_thread,
-    0x10000100, 0x4000, 0, 0, NULL);
-  if (atid >= 0) sceKernelStartThread(atid, 0, NULL);
-
   SceCtrlData pad, old;
   memset(&old, 0, sizeof(old));
+  sceCtrlPeekBufferPositive(0, &old, 1); // opening X is not a stop press
   SceAvPlayerFrameInfo vf;
   memset(&vf, 0, sizeof(vf));
 
@@ -243,6 +250,19 @@ int player_run_blocking(void) {
     return -3;
   }
 
+  // Starting before IsActive made the audio thread exit during buffering.
+  audio_tid = sceKernelCreateThread("plex_audio", audio_thread,
+    0x10000100, 0x4000, 0, 0, NULL);
+  int r = audio_tid;
+  if (r < 0) { player_stop(); return r; }
+  r = sceKernelStartThread(audio_tid, 0, NULL);
+  if (r < 0) {
+    sceKernelDeleteThread(audio_tid);
+    audio_tid = -1;
+    player_stop();
+    return r;
+  }
+
   int frames = 0;
   while (!stop_flag && sceAvPlayerIsActive(handle) == SCE_TRUE) {
     if (sceAvPlayerGetVideoData(handle, &vf) && vf.pData) {
@@ -262,23 +282,17 @@ int player_run_blocking(void) {
   }
   plog("play end frames=%d", frames);
 
-  stop_flag = 1;
-  if (atid >= 0) {
-    sceKernelWaitThreadEnd(atid, NULL, NULL);
-    sceKernelDeleteThread(atid);
-  }
   player_stop();
-  if (fb_block >= 0) {
-    sceKernelFreeMemBlock(fb_block);
-    fb_block = -1;
-  }
-  framebuf = NULL;
-  psvDebugScreenInit(); // hand the screen back to the text UI
   return 0;
 }
 
 void player_stop(void) {
   stop_flag = 1;
+  if (audio_tid >= 0) {
+    sceKernelWaitThreadEnd(audio_tid, NULL, NULL);
+    sceKernelDeleteThread(audio_tid);
+    audio_tid = -1;
+  }
   if (audio_port >= 0) {
     sceAudioOutReleasePort(audio_port);
     audio_port = -1;
@@ -288,6 +302,13 @@ void player_stop(void) {
     sceAvPlayerClose(handle);
     handle = -1;
   }
+  if (fb_block >= 0) {
+    psvDebugScreenInit(); // restore scanout before freeing its old buffer
+    sceDisplayWaitVblankStart();
+    sceKernelFreeMemBlock(fb_block);
+    fb_block = -1;
+  }
+  framebuf = NULL;
 }
 
 #else

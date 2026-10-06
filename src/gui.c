@@ -43,6 +43,8 @@ static void gui_log(const char *fmt, ...) {
   va_start(ap, fmt);
   n = vsnprintf(tmp, sizeof(tmp) - 2, fmt, ap);
   va_end(ap);
+  if (n < 0) return;
+  if (n > (int)sizeof(tmp) - 3) n = sizeof(tmp) - 3;
   tmp[n++] = '\n';
   sceIoWrite(g_log, tmp, (SceSize)n);
 }
@@ -62,7 +64,7 @@ static void gui_log(const char *fmt, ...) {
 #define ROWS 2
 #define PAGE (COLS * ROWS)
 #define PW 150
-#define PH 200
+#define PH 184
 #define CELLW (FB_W / COLS)
 #define TOP 64
 
@@ -131,7 +133,7 @@ void gui_fb_early(void) {
   if (g_fb) return;
   g_fbid = sceKernelAllocMemBlock("plex_gui",
     SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
-    FB_W * FB_H * sizeof(*g_fb), NULL);
+    2 * 1024 * 1024, NULL); // CDRAM sizes must be 256KB aligned
   if (g_fbid >= 0) {
     if (sceKernelGetMemBlockBase(g_fbid, (void **)&g_fb) < 0) {
       gui_log("gui fb base FAIL block=0x%X", g_fbid);
@@ -318,6 +320,7 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
   int cursor = 0, page = 0, dirty = 1, art_page = -1;
   SceCtrlData pad, old;
   memset(&old, 0, sizeof(old));
+  sceCtrlPeekBufferPositive(0, &old, 1); // consume the X that opened us
 
   for (;;) {
     sceCtrlPeekBufferPositive(0, &pad, 1);
@@ -371,7 +374,7 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
       for (int i = page * PAGE; i < (page + 1) * PAGE && i < n; i++) {
         int cell = i - page * PAGE;
         int cx = (cell % COLS) * CELLW;
-        int cy = TOP + (cell / COLS) * 240;
+        int cy = TOP + (cell / COLS) * 216;
         int px = cx + (CELLW - PW) / 2, py = cy;
         int sel = (i == cursor);
         // Poster (from the RAM decode cache) or fallback tile.
@@ -395,7 +398,7 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
             rect(px + PW, py, 3, PH, C_ORANGE); }
         draw_text_trunc(items[i].title, px - 8, py + PH + 6, 11, C_WHITE);
       }
-      draw_text("X play   O back   START quits", 16, FB_H - 32, C_GREY);
+      draw_text("X open   O back   START quits", 16, FB_H - 32, C_GREY);
       if (notice && notice[0])
         draw_text_trunc(notice, 16, FB_H - 56, 52, C_ORANGE);
       char ac[32];

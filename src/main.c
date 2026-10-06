@@ -111,6 +111,8 @@ static void log_msg(const char *fmt, ...) {
   va_start(ap, fmt);
   n += vsnprintf(tmp + n, sizeof(tmp) - n - 2, fmt, ap);
   va_end(ap);
+  if (n < 0) return;
+  if (n > (int)sizeof(tmp) - 3) n = sizeof(tmp) - 3;
   tmp[n++] = '\n';
   sceIoWrite(logfd, tmp, n);
 }
@@ -215,8 +217,8 @@ static int kb_prompt_token(char *out, unsigned out_len) {
     if (c >= rowlen) c = rowlen - 1;
     if (pressed & SCE_CTRL_UP) { r = (r + NROWS - 1) % NROWS; rowlen = (int)strlen(rows[r]); if (c >= rowlen) c = rowlen - 1; }
     if (pressed & SCE_CTRL_DOWN) { r = (r + 1) % NROWS; rowlen = (int)strlen(rows[r]); if (c >= rowlen) c = rowlen - 1; }
-    if (pressed & SCE_CTRL_LEFT) c = (c + NCOLS - 1) % NCOLS;
-    if (pressed & SCE_CTRL_RIGHT) c = (c + 1) % NCOLS;
+    if (pressed & SCE_CTRL_LEFT) c = (c + rowlen - 1) % rowlen;
+    if (pressed & SCE_CTRL_RIGHT) c = (c + 1) % rowlen;
     if ((pressed & SCE_CTRL_CIRCLE) && tlen > 0) tok[--tlen] = 0;
     if ((pressed & SCE_CTRL_CROSS) && rows[r][c] && tlen + 1 < sizeof(tok) &&
         tlen + 1 < out_len)
@@ -236,7 +238,7 @@ int main(void) {
   DBG_INIT();
   sceIoMkdir("ux0:data/plex-client", 0777);
   logfd = sceIoOpen("ux0:data/plex-client/debug.log",
-    SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+    SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC | SCE_O_APPEND, 0777);
   log_msg("boot v%s", APP_VERSION);
   sceSysmoduleLoadModule(SCE_SYSMODULE_IME);
   // Required before any system dialog (keyboard included).
@@ -252,7 +254,7 @@ int main(void) {
   settings_t st;
   settings_load(&st);
   char url[512], hls[1024];
-  static char body[32768];
+  static char body[512 * 1024];
   plex_pin_t pin = { 0 };
   browse_item_t items[BROWSE_MAX_ITEMS];
   int n_items = 0, cursor = 0;
@@ -260,6 +262,9 @@ int main(void) {
   int need_fetch = 1;
   browse_item_t sections[BROWSE_MAX_ITEMS];
   int n_sec = 0, sec_idx = 0;
+  int folder_depth = 0;
+  static char folder_keys[16][BROWSE_KEY_LEN];
+  static char folder_titles[16][BROWSE_TITLE_LEN];
   // Network calls block, so they run as one-shot "pending" actions:
   // the button press only arms the action, the next frame paints a
   // "Working..." screen first, and only then does the blocking call
@@ -373,19 +378,23 @@ int main(void) {
         if ((pressed & SCE_CTRL_CROSS) && n_sec > 0) {
           if (cursor >= n_sec) cursor = n_sec - 1;
           sec_idx = cursor;
+          folder_depth = 0;
           s = S_ITEMS;
           need_fetch = 1;
           cursor = 0;
           status[0] = 0;
         }
+        if ((pressed & SCE_CTRL_CROSS) && !n_sec) need_fetch = 1;
         // No logout: login is one-time. A rejected token clears
         // itself (see ACT_FETCH_SEC) and returns here alone.
       } else if (s == S_ITEMS) {
+        if ((pressed & SCE_CTRL_CROSS) && !n_items) need_fetch = 1;
         // The poster grid owns all input while visible (blocking call
         // in render below): X-play/O-back live there, not here.
         // O here only fires on the brief "(loading...)" frame.
         if (pressed & SCE_CTRL_CIRCLE) {
-          s = S_SECTIONS;
+          if (folder_depth) folder_depth--;
+          else s = S_SECTIONS;
           need_fetch = 1;
           status[0] = 0;
         }
@@ -450,6 +459,7 @@ int main(void) {
         }
         break;
       case ACT_FETCH_SEC:
+        n_sec = 0;
         plex_build_sections_url(st.server, st.token, url, sizeof(url));
         if (http_get(url, st.client_id, "text/xml", body, sizeof(body)) == 0) {
           n_sec = plex_parse_items(body, "Directory", sections, 64);
@@ -473,17 +483,29 @@ int main(void) {
         cursor = 0;
         break;
       case ACT_FETCH_ITEMS:
+        n_items = 0;
         plex_build_items_url(st.server, st.token,
           sections[sec_idx].key, url, sizeof(url));
+        if (folder_depth)
+          snprintf(url, sizeof(url), "%s%s?X-Plex-Token=%s",
+            st.server, folder_keys[folder_depth - 1], st.token);
         if (http_get(url, st.client_id, "text/xml",
-              body, sizeof(body)) == 0)
-          n_items = plex_parse_items(body, "Video", items, 64);
-        if (!n_items)
-          n_items = plex_parse_items(body, "Directory", items, 64);
-        if (!n_items)
-          snprintf(status, sizeof(status), "This library is empty");
-        else
-          status[0] = 0;
+              body, sizeof(body)) == 0) {
+          n_items = plex_parse_items(body, NULL, items, BROWSE_MAX_ITEMS);
+          if (!n_items)
+            snprintf(status, sizeof(status), "This library is empty");
+          else
+            status[0] = 0;
+        } else if (http_last_status() == 401) {
+          st.token[0] = 0;
+          settings_save(&st);
+          memset(&pin, 0, sizeof(pin));
+          s = S_LOGIN;
+          snprintf(status, sizeof(status), "Token rejected - sign in again");
+        } else {
+          snprintf(status, sizeof(status), "Library fetch failed (HTTP %d)",
+            http_last_status());
+        }
         need_fetch = 0;
         cursor = 0;
         break;
@@ -541,9 +563,9 @@ int main(void) {
       ui_bar("Libraries");
       ui_blank();
       if (cursor >= n_sec && n_sec > 0) cursor = n_sec - 1;
-      for (int i = 0; i < n_sec && i < 20; i++)
+      for (int i = (cursor / 20) * 20; i < n_sec && i < (cursor / 20 + 1) * 20; i++)
         ui_row(i == cursor, sections[i].title);
-      if (!n_sec) ui_center("(loading...)");
+      if (!n_sec) ui_center(need_fetch ? "(loading...)" : "No libraries available");
       ui_status(status);
       ui_footer("Up/Down move   X open   START quits");
     } else if (s == S_ITEMS) {
@@ -551,10 +573,23 @@ int main(void) {
         pending = ACT_FETCH_ITEMS;
       } else if (n_items > 0) {
         // Poster grid owns the screen until back/quit/play.
-        int sel = gui_browse(sections[sec_idx].title, items, n_items,
+        int sel = gui_browse(folder_depth ? folder_titles[folder_depth - 1] :
+          sections[sec_idx].title, items, n_items,
           st.server, st.token, status);
+        DBG_INIT(); // restore the text framebuffer on every grid exit
+        sceCtrlPeekBufferPositive(0, &old, 1);
         if (sel == -2) break; // START: quit the app
-        if (sel >= 0) {
+        if (sel >= 0 && items[sel].is_directory) {
+          if (folder_depth < 16) {
+            snprintf(folder_keys[folder_depth], BROWSE_KEY_LEN, "%s", items[sel].key);
+            snprintf(folder_titles[folder_depth], BROWSE_TITLE_LEN, "%s", items[sel].title);
+            folder_depth++;
+            need_fetch = 1;
+            status[0] = 0;
+          } else {
+            snprintf(status, sizeof(status), "Folder depth limit reached");
+          }
+        } else if (sel >= 0) {
           plex_build_vita_transcode_url(st.server, st.token,
             items[sel].key, hls, sizeof(hls));
           int prc = player_play_hls(hls);
@@ -565,7 +600,8 @@ int main(void) {
           else
             status[0] = 0;
         } else {
-          s = S_SECTIONS;
+          if (folder_depth) folder_depth--;
+          else s = S_SECTIONS;
           need_fetch = 1;
           status[0] = 0; // -1 is O/back only: alloc cannot fail anymore
         }
@@ -576,9 +612,9 @@ int main(void) {
         continue;
       }
       DBG_CLEAR();
-      ui_bar(sections[sec_idx].title);
+      ui_bar(folder_depth ? folder_titles[folder_depth - 1] : sections[sec_idx].title);
       ui_blank();
-      if (!n_items) ui_center("(loading...)");
+      if (!n_items) ui_center(need_fetch ? "(loading...)" : "No items available");
       ui_status(status);
       ui_footer("Up/Down move   X play   O back   START quits");
     } else {
