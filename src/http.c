@@ -83,6 +83,12 @@ static int run(const char *url, const char *client_id, const char *accept,
   if (conn < 0) goto out;
   req = sceHttpCreateRequestWithURL(conn, method, url, 0);
   if (req < 0) goto out;
+  // Fail fast on dead networks: stock timeouts are 30s connect /
+  // 120s send+recv, which looks like a hang with zero feedback.
+  sceHttpSetResolveTimeOut(req, 10 * 1000 * 1000);
+  sceHttpSetConnectTimeOut(req, 10 * 1000 * 1000);
+  sceHttpSetSendTimeOut(req, 15 * 1000 * 1000);
+  sceHttpSetRecvTimeOut(req, 15 * 1000 * 1000);
 
   r = sceHttpSendRequest(req, NULL, 0);
   if (r < 0) goto out;
@@ -133,6 +139,10 @@ int http_download(const char *url, const char *path,
   if (req < 0) goto out;
   // Release assets 302-redirect to object storage.
   sceHttpSetAutoRedirect(req, 1);
+  sceHttpSetResolveTimeOut(req, 10 * 1000 * 1000);
+  sceHttpSetConnectTimeOut(req, 10 * 1000 * 1000);
+  sceHttpSetSendTimeOut(req, 15 * 1000 * 1000);
+  sceHttpSetRecvTimeOut(req, 20 * 1000 * 1000);
 
   if (sceHttpSendRequest(req, NULL, 0) < 0) goto out;
   int status = 0;

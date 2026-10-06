@@ -11,7 +11,10 @@
 #include <psp2/io/stat.h>
 #include "debugScreen.h"
 #define DBG_INIT() psvDebugScreenInit()
-#define DBG_CLEAR() psvDebugScreenPuts("\033[2J")
+// NOTE: "\033[2J" only wipes pixels — the cursor stays where it was,
+// so every frame printed lower and lower ("waterfall" bug). "\033[H"
+// homes the cursor, which is what makes clear-then-redraw work.
+#define DBG_CLEAR() psvDebugScreenPuts("\033[2J\033[H")
 #define DBG_PRINT(...) psvDebugScreenPrintf(__VA_ARGS__)
 #else
 #define DBG_INIT() ((void)0)
@@ -33,11 +36,53 @@ static int host_demo(void);
 
 typedef enum { S_LOGIN, S_SECTIONS, S_ITEMS, S_PLAY } screen_t;
 
+#ifdef __vita__
+// Plex brand colors: near-black background, #E5A00D orange accent.
+#define C_BG "\033[48;2;26;26;26m"
+#define C_FG "\033[38;2;245;245;245m"
+#define C_ORANGE_BG "\033[48;2;229;160;13m"
+#define C_ORANGE_FG "\033[38;2;229;160;13m"
+#define C_BLACK_FG "\033[38;2;0;0;0m"
+#define UI_COLS 100
+
+static void ui_theme(void) { DBG_PRINT(C_BG C_FG); }
+
+// Full-width orange bar, then back to the dark theme.
+static void ui_bar(const char *label) {
+  char line[128];
+  snprintf(line, sizeof(line), "  PLEX for Vita v%s  |  %s",
+    APP_VERSION, label);
+  int pad = UI_COLS - (int)strlen(line);
+  if (pad < 0) pad = 0;
+  DBG_PRINT(C_ORANGE_BG C_BLACK_FG "%s%*s" C_BG C_FG "\n\n", line, pad, "");
+}
+
+static void ui_center(const char *s) {
+  int pad = (UI_COLS - (int)strlen(s)) / 2;
+  if (pad < 1) pad = 1;
+  DBG_PRINT("%*s%s\n", pad, "", s);
+}
+
+static void ui_blank(void) { DBG_PRINT("\n"); }
+
+// Persistent status line, shown every frame until replaced.
+static void ui_status(const char *s) {
+  if (!s || !s[0]) return;
+  DBG_PRINT("\n" C_ORANGE_FG "  %s" C_FG "\n", s);
+}
+
+static void ui_footer(const char *s) {
+  DBG_PRINT("\n");
+  ui_center(s);
+}
+#endif
+
 int main(void) {
 #ifdef __vita__
   DBG_INIT();
   sceIoMkdir("ux0:data/plex-client", 0777);
   http_init();
+  ui_theme();
 
   settings_t st;
   settings_load(&st);
@@ -50,6 +95,16 @@ int main(void) {
   int need_fetch = 1;
   browse_item_t sections[BROWSE_MAX_ITEMS];
   int n_sec = 0, sec_idx = 0;
+  // Network calls block, so they run as one-shot "pending" actions:
+  // the button press only arms the action, the next frame paints a
+  // "Working..." screen first, and only then does the blocking call
+  // run. The user always sees feedback, never a frozen frame.
+  typedef enum {
+    ACT_NONE, ACT_PIN_CREATE, ACT_PIN_POLL,
+    ACT_FETCH_SEC, ACT_FETCH_ITEMS
+  } act_t;
+  act_t pending = ACT_NONE;
+  static char status[256] = { 0 };
 
   SceCtrlData pad, old = { 0 };
   memset(&old, 0, sizeof(old));
@@ -62,8 +117,13 @@ int main(void) {
       int choice = -1;
       while (choice < 0) {
         DBG_CLEAR();
-        DBG_PRINT("Update %s found (this: %s)\n\nX = download+install\nO = skip\n",
-          tag, APP_VERSION);
+        ui_bar("Update available");
+        ui_center("A newer build is ready:");
+        char line[64];
+        snprintf(line, sizeof(line), "%s  ->  %s", APP_VERSION, tag);
+        ui_center(line);
+        ui_blank();
+        ui_center("[ X ] Download + install      [ O ] Skip");
         sceCtrlPeekBufferPositive(0, &pad, 1);
         int pressed = pad.buttons & ~old.buttons;
         old = pad;
@@ -73,15 +133,23 @@ int main(void) {
       }
       if (choice == 1) {
         DBG_CLEAR();
-        DBG_PRINT("Downloading update...\n");
+        ui_bar("Update available");
+        ui_center("Downloading update...");
         if (update_download(dl, NULL) == 0) {
-          DBG_PRINT("Installing - app will exit,\nrelaunch when done.\n");
+          DBG_CLEAR();
+          ui_bar("Update available");
+          ui_center("Installing - app will exit,");
+          ui_center("relaunch when done.");
           sceKernelDelayThread(2000000);
           update_install(); // exits on success
-          DBG_PRINT("Install failed (%s).\nContinuing.\n", UPDATE_VPK_PATH);
+          DBG_CLEAR();
+          ui_bar("Update available");
+          ui_center("Install failed. Continuing.");
           sceKernelDelayThread(2000000);
         } else {
-          DBG_PRINT("Download failed. Continuing.\n");
+          DBG_CLEAR();
+          ui_bar("Update available");
+          ui_center("Download failed. Continuing.");
           sceKernelDelayThread(2000000);
         }
       }
@@ -92,64 +160,120 @@ int main(void) {
     sceCtrlPeekBufferPositive(0, &pad, 1);
     int pressed = pad.buttons & ~old.buttons;
     old = pad;
-    if ((pressed & SCE_CTRL_UP) && cursor > 0) cursor--;
-    if (pressed & SCE_CTRL_DOWN) cursor++;
+    if (pad.buttons & SCE_CTRL_START) break;
 
-    DBG_CLEAR();
-    if (s == S_LOGIN) {
-      DBG_PRINT("PLEX for Vita - login\n\n");
-      if (!pin.pin_id) {
-        DBG_PRINT("Press X to get link code\n");
-        if (pressed & SCE_CTRL_CROSS) {
-          plex_pin_create_url(url, sizeof(url));
-          if (http_post_pins(url, st.client_id, body, sizeof(body)) == 0 &&
-              plex_parse_pin_create(body, &pin) == 0)
-            settings_save(&st);
-          else
-            DBG_PRINT("net error, retry\n");
-        }
-      } else {
-        DBG_PRINT("1. Go to plex.tv/link\n2. Enter: %s\n\n", pin.code);
-        DBG_PRINT("X = done  O = new code\n");
-        if (pressed & SCE_CTRL_CROSS) {
-          plex_pin_poll_url(pin.pin_id, url, sizeof(url));
-          if (http_get(url, st.client_id, "application/json",
-                body, sizeof(body)) == 0 &&
-              plex_parse_auth_token(body, st.token, sizeof(st.token)) == 0) {
-            settings_save(&st);
-            s = S_SECTIONS;
-            need_fetch = 1;
-          } else {
-            DBG_PRINT("not approved yet\n");
+    // ---- input: arm actions, never block here ----
+    if (pending == ACT_NONE) {
+      if ((pressed & SCE_CTRL_UP) && cursor > 0) cursor--;
+      if (pressed & SCE_CTRL_DOWN) cursor++;
+      if (s == S_LOGIN) {
+        if (!pin.pin_id) {
+          if (pressed & SCE_CTRL_CROSS) pending = ACT_PIN_CREATE;
+        } else {
+          if (pressed & SCE_CTRL_CROSS) pending = ACT_PIN_POLL;
+          if (pressed & SCE_CTRL_CIRCLE) {
+            memset(&pin, 0, sizeof(pin));
+            status[0] = 0;
           }
         }
-        if (pressed & SCE_CTRL_CIRCLE) memset(&pin, 0, sizeof(pin));
+      } else if (s == S_SECTIONS) {
+        if ((pressed & SCE_CTRL_CROSS) && n_sec > 0) {
+          if (cursor >= n_sec) cursor = n_sec - 1;
+          sec_idx = cursor;
+          s = S_ITEMS;
+          need_fetch = 1;
+          cursor = 0;
+          status[0] = 0;
+        }
+        if (pressed & SCE_CTRL_CIRCLE) {
+          st.token[0] = 0;
+          settings_save(&st);
+          s = S_LOGIN;
+          memset(&pin, 0, sizeof(pin));
+          status[0] = 0;
+        }
+      } else if (s == S_ITEMS) {
+        if ((pressed & SCE_CTRL_CROSS) && n_items > 0) {
+          if (cursor >= n_items) cursor = n_items - 1;
+          plex_build_vita_transcode_url(st.server, st.token,
+            items[cursor].key, hls, sizeof(hls));
+          player_play_hls(hls);
+          player_run_blocking();
+          ui_theme(); // player used its own framebuffer
+        }
+        if (pressed & SCE_CTRL_CIRCLE) {
+          s = S_SECTIONS;
+          need_fetch = 1;
+          status[0] = 0;
+        }
+      } else {
+        if (pressed & SCE_CTRL_CIRCLE) {
+          player_stop();
+          s = S_ITEMS;
+        }
       }
-    } else if (s == S_SECTIONS) {
-      if (need_fetch) {
+    }
+
+    // ---- pending network action: paint "Working..." first ----
+    if (pending != ACT_NONE) {
+      DBG_CLEAR();
+      ui_bar("Please wait");
+      ui_blank();
+      ui_center("Working...");
+      if (pending == ACT_PIN_CREATE)
+        ui_center("Contacting plex.tv for a link code");
+      else if (pending == ACT_PIN_POLL)
+        ui_center("Checking plex.tv/link approval");
+      else
+        ui_center("Talking to your Plex server");
+      ui_blank();
+      ui_center("This can take up to 10 seconds.");
+
+      switch (pending) {
+      case ACT_PIN_CREATE:
+        plex_pin_create_url(url, sizeof(url));
+        if (http_post_pins(url, st.client_id, body, sizeof(body)) == 0 &&
+            plex_parse_pin_create(body, &pin) == 0) {
+          settings_save(&st);
+          snprintf(status, sizeof(status),
+            "Code ready - enter it at plex.tv/link, then press X");
+        } else {
+          snprintf(status, sizeof(status),
+            "Network error - check Vita Wi-Fi, then press X to retry");
+        }
+        break;
+      case ACT_PIN_POLL:
+        plex_pin_poll_url(pin.pin_id, url, sizeof(url));
+        if (http_get(url, st.client_id, "application/json",
+              body, sizeof(body)) == 0 &&
+            plex_parse_auth_token(body, st.token, sizeof(st.token)) == 0) {
+          settings_save(&st);
+          s = S_SECTIONS;
+          need_fetch = 1;
+          cursor = 0;
+          snprintf(status, sizeof(status), "Signed in!");
+        } else {
+          snprintf(status, sizeof(status),
+            "Not approved yet - enter the code at plex.tv/link, then X");
+        }
+        break;
+      case ACT_FETCH_SEC:
         plex_build_sections_url(st.server, st.token, url, sizeof(url));
-        if (http_get(url, st.client_id, "text/xml", body, sizeof(body)) == 0)
+        if (http_get(url, st.client_id, "text/xml", body, sizeof(body)) == 0) {
           n_sec = plex_parse_items(body, "Directory", sections, 64);
+          if (!n_sec)
+            snprintf(status, sizeof(status), "Signed in, but no libraries found");
+          else
+            status[0] = 0;
+        } else {
+          snprintf(status, sizeof(status),
+            "Server unreachable (%.60s) - O to logout, START quits",
+            st.server);
+        }
         need_fetch = 0;
         cursor = 0;
-      }
-      DBG_PRINT("Libraries (O=logout):\n\n");
-      for (int i = 0; i < n_sec && i < 20; i++)
-        DBG_PRINT("%c %s\n", i == cursor ? '>' : ' ', sections[i].title);
-      if ((pressed & SCE_CTRL_CROSS) && n_sec > 0) {
-        sec_idx = cursor;
-        s = S_ITEMS;
-        need_fetch = 1;
-        cursor = 0;
-      }
-      if (pressed & SCE_CTRL_CIRCLE) {
-        st.token[0] = 0;
-        settings_save(&st);
-        s = S_LOGIN;
-        memset(&pin, 0, sizeof(pin));
-      }
-    } else if (s == S_ITEMS) {
-      if (need_fetch) {
+        break;
+      case ACT_FETCH_ITEMS:
         plex_build_items_url(st.server, st.token,
           sections[sec_idx].key, url, sizeof(url));
         if (http_get(url, st.client_id, "text/xml",
@@ -157,29 +281,88 @@ int main(void) {
           n_items = plex_parse_items(body, "Video", items, 64);
         if (!n_items)
           n_items = plex_parse_items(body, "Directory", items, 64);
+        if (!n_items)
+          snprintf(status, sizeof(status), "This library is empty");
+        else
+          status[0] = 0;
         need_fetch = 0;
         cursor = 0;
+        break;
+      default:
+        break;
       }
-      DBG_PRINT("%s (O=back):\n\n", sections[sec_idx].title);
-      for (int i = 0; i < n_items && i < 20; i++)
-        DBG_PRINT("%c %s\n", i == cursor ? '>' : ' ', items[i].title);
-      if ((pressed & SCE_CTRL_CROSS) && n_items > 0) {
-        plex_build_vita_transcode_url(st.server, st.token,
-          items[cursor].key, hls, sizeof(hls));
-        player_play_hls(hls);
-        player_run_blocking();
-        s = S_ITEMS;
-      }
-      if (pressed & SCE_CTRL_CIRCLE) { s = S_SECTIONS; need_fetch = 1; }
-    } else {
-      DBG_PRINT("Playing (active=%d):\n%s\n\nO = stop/back\n",
-        player_active(), hls);
-      if (pressed & SCE_CTRL_CIRCLE) {
-        player_stop();
-        s = S_ITEMS;
-      }
+      pending = ACT_NONE;
+      sceKernelDelayThread(33000);
+      continue;
     }
-    if (pad.buttons & SCE_CTRL_START) break;
+
+    // ---- render ----
+    DBG_CLEAR();
+    if (s == S_LOGIN) {
+      ui_bar("Sign in");
+      ui_center("P L E X");
+      ui_blank();
+      if (!pin.pin_id) {
+        ui_center("Link this Vita to your Plex account:");
+        ui_blank();
+        ui_center("1.  Press X to get a 4-letter link code");
+        ui_center("2.  On another device, go to plex.tv/link");
+        ui_center("3.  Enter the code, come back, press X");
+        ui_blank();
+        ui_center("[ X ]  Get link code");
+      } else {
+        ui_center("On another device, go to plex.tv/link");
+        ui_center("and enter this code:");
+        ui_blank();
+        char code[64];
+        snprintf(code, sizeof(code), "  %s  ", pin.code);
+        DBG_PRINT(C_ORANGE_FG);
+        ui_center(code);
+        DBG_PRINT(C_FG);
+        ui_blank();
+        ui_center("[ X ]  I entered the code      [ O ]  New code");
+      }
+      ui_status(status);
+      ui_footer("START quits");
+    } else if (s == S_SECTIONS) {
+      if (need_fetch) pending = ACT_FETCH_SEC;
+      ui_bar("Libraries");
+      ui_blank();
+      if (cursor >= n_sec && n_sec > 0) cursor = n_sec - 1;
+      for (int i = 0; i < n_sec && i < 20; i++) {
+        char line[160];
+        snprintf(line, sizeof(line), "%c  %s", i == cursor ? '>' : ' ',
+          sections[i].title);
+        if (i == cursor) DBG_PRINT(C_ORANGE_FG);
+        ui_center(line);
+        if (i == cursor) DBG_PRINT(C_FG);
+      }
+      if (!n_sec) ui_center("(loading...)");
+      ui_status(status);
+      ui_footer("Up/Down move   X open   O logout   START quits");
+    } else if (s == S_ITEMS) {
+      if (need_fetch) pending = ACT_FETCH_ITEMS;
+      ui_bar(sections[sec_idx].title);
+      ui_blank();
+      if (cursor >= n_items && n_items > 0) cursor = n_items - 1;
+      for (int i = 0; i < n_items && i < 20; i++) {
+        char line[160];
+        snprintf(line, sizeof(line), "%c  %s", i == cursor ? '>' : ' ',
+          items[i].title);
+        if (i == cursor) DBG_PRINT(C_ORANGE_FG);
+        ui_center(line);
+        if (i == cursor) DBG_PRINT(C_FG);
+      }
+      if (!n_items) ui_center("(loading...)");
+      ui_status(status);
+      ui_footer("Up/Down move   X play   O back   START quits");
+    } else {
+      ui_bar("Now playing");
+      ui_blank();
+      ui_center(hls);
+      ui_status(status);
+      ui_footer("O stop/back   START quits");
+    }
     sceKernelDelayThread(33000);
   }
   player_stop();
