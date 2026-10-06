@@ -552,13 +552,18 @@ int main(void) {
       } else if (n_items > 0) {
         // Poster grid owns the screen until back/quit/play.
         int sel = gui_browse(sections[sec_idx].title, items, n_items,
-          st.server, st.token);
+          st.server, st.token, status);
         if (sel == -2) break; // START: quit the app
         if (sel >= 0) {
           plex_build_vita_transcode_url(st.server, st.token,
             items[sel].key, hls, sizeof(hls));
-          player_play_hls(hls);
-          player_run_blocking();
+          int prc = player_play_hls(hls);
+          if (prc >= 0) prc = player_run_blocking();
+          if (prc < 0)
+            snprintf(status, sizeof(status),
+              "Play failed rc=%d - see debug.log, O back", prc);
+          else
+            status[0] = 0;
         } else {
           s = S_SECTIONS;
           need_fetch = 1;

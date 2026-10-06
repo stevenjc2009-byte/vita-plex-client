@@ -13,11 +13,32 @@
 #include <psp2/ctrl.h>
 #include <psp2/display.h>
 #include <psp2/kernel/sysmem.h>
+#include <psp2/io/fcntl.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/sysmodule.h>
 #include <psp2/types.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdarg.h>
+
+// Own append-log (main.c owns debug.log truncated at boot; we append).
+static SceUID p_log = -1;
+static void plog(const char *fmt, ...) {
+  if (p_log < 0) {
+    p_log = sceIoOpen("ux0:data/plex-client/debug.log",
+      SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
+    if (p_log < 0) return;
+  }
+  char tmp[256];
+  int n = 0;
+  va_list ap;
+  va_start(ap, fmt);
+  n = vsnprintf(tmp, sizeof(tmp) - 2, fmt, ap);
+  va_end(ap);
+  tmp[n++] = '\n';
+  sceIoWrite(p_log, tmp, (SceSize)n);
+}
 
 void psvDebugScreenInit(void);
 
@@ -150,7 +171,7 @@ static int audio_thread(SceSize argc, void *argv) {
 
 int player_play_hls(const char *hls_url) {
   int r = sceSysmoduleLoadModule(SCE_SYSMODULE_AVPLAYER);
-  if (r < 0) return r;
+  if (r < 0) { plog("play sysmod FAIL r=0x%X", r); return r; }
 
   SceAvPlayerInitData init;
   memset(&init, 0, sizeof(init));
@@ -158,12 +179,15 @@ int player_play_hls(const char *hls_url) {
   init.debugLevel = 0;
 
   handle = sceAvPlayerInit(&init);
-  if (handle < 0) return handle;
+  if (handle < 0) { plog("play init FAIL r=0x%X", handle); return handle; }
 
   r = sceAvPlayerAddSource(handle, hls_url);
+  plog("play addsrc r=0x%X %.80s", r, hls_url);
   if (r < 0) return r;
 
-  return sceAvPlayerStart(handle);
+  r = sceAvPlayerStart(handle);
+  plog("play start r=0x%X", r);
+  return r;
 }
 
 int player_active(void) {
@@ -171,15 +195,22 @@ int player_active(void) {
   return sceAvPlayerIsActive(handle) == SCE_TRUE;
 }
 
-void player_run_blocking(void) {
-  if (handle < 0) return;
+// Returns 0 after normal playback, <0 when nothing ever played:
+// -1 no handle, -2 framebuffer alloc fail, -3 stream never went
+// active within 15s (bad URL / server refused), -4 X cancelled wait.
+int player_run_blocking(void) {
+  if (handle < 0) return -1;
   stop_flag = 0;
   fb_block = sceKernelAllocMemBlock("plex_video",
     SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
     FB_W * FB_H * sizeof(*framebuf), NULL);
   if (fb_block >= 0)
     sceKernelGetMemBlockBase(fb_block, (void **)&framebuf);
-  if (!framebuf) return;
+  if (!framebuf) {
+    plog("play fb ALLOC FAIL block=0x%X", fb_block);
+    player_stop();
+    return -2;
+  }
   memset(framebuf, 0, FB_W * FB_H * sizeof(*framebuf));
 
   SceUID atid = sceKernelCreateThread("plex_audio", audio_thread,
@@ -191,8 +222,34 @@ void player_run_blocking(void) {
   SceAvPlayerFrameInfo vf;
   memset(&vf, 0, sizeof(vf));
 
+  // HLS needs seconds to buffer: the old code checked IsActive once
+  // and instantly bailed when the stream wasn't up yet, so X looked
+  // dead. Wait up to 15s for active (X cancels), then pump.
+  int waited = 0, cancelled = 0;
+  while (!stop_flag && sceAvPlayerIsActive(handle) != SCE_TRUE &&
+      waited < 150) {
+    sceCtrlPeekBufferPositive(0, &pad, 1);
+    unsigned pressed = pad.buttons & ~old.buttons;
+    old = pad;
+    if (pressed & SCE_CTRL_CROSS) { cancelled = 1; break; }
+    sceKernelDelayThread(100000);
+    waited++;
+  }
+  plog("play active=%d waited=%dms cancelled=%d",
+    sceAvPlayerIsActive(handle) == SCE_TRUE, waited * 100, cancelled);
+  if (cancelled) { player_stop(); return -4; }
+  if (sceAvPlayerIsActive(handle) != SCE_TRUE) {
+    player_stop();
+    return -3;
+  }
+
+  int frames = 0;
   while (!stop_flag && sceAvPlayerIsActive(handle) == SCE_TRUE) {
     if (sceAvPlayerGetVideoData(handle, &vf) && vf.pData) {
+      if (!frames)
+        plog("play first frame %ux%u", vf.details.video.width,
+          vf.details.video.height);
+      frames++;
       blit_yvu420(vf.pData, vf.details.video.width,
         vf.details.video.height);
       present();
@@ -203,6 +260,7 @@ void player_run_blocking(void) {
     if (pressed & SCE_CTRL_CROSS) break;
     sceDisplayWaitVblankStart();
   }
+  plog("play end frames=%d", frames);
 
   stop_flag = 1;
   if (atid >= 0) {
@@ -216,6 +274,7 @@ void player_run_blocking(void) {
   }
   framebuf = NULL;
   psvDebugScreenInit(); // hand the screen back to the text UI
+  return 0;
 }
 
 void player_stop(void) {
@@ -238,7 +297,7 @@ int player_play_hls(const char *hls_url) {
   return -1; // host stub: no AvPlayer
 }
 int player_active(void) { return 0; }
-void player_run_blocking(void) {}
+int player_run_blocking(void) { return -1; }
 void player_stop(void) {}
 
 #endif

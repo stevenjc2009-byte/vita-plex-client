@@ -70,6 +70,60 @@ static SceUID g_fbid = -1;
 static unsigned int *g_fb = NULL;
 static int g_shared = 0; // 1: drawing into debugScreen's scanout buffer
 
+// In-RAM decode cache for the current page: repainting used to re-open
+// and re-decode up to 10 JPEGs from ux0 on EVERY cursor move, which is
+// why scrolling looked like a full page refresh. Decode once per page
+// entry; repaints blit from RAM. 10 x 150x200x3 = 900KB heap.
+static unsigned char *pg_img[PAGE];
+static int pg_cached = -1; // page number currently cached
+
+static void page_free(void) {
+  for (int k = 0; k < PAGE; k++) {
+    free(pg_img[k]);
+    pg_img[k] = NULL;
+  }
+  pg_cached = -1;
+}
+
+// Decode one cached JPEG into a fixed PW x PH x RGB888 buffer.
+static void page_decode_cell(int cell, const char *path) {
+  free(pg_img[cell]);
+  pg_img[cell] = NULL;
+  SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0);
+  if (fd < 0) return;
+  int sz = (int)sceIoLseek(fd, 0, SCE_SEEK_END);
+  sceIoLseek(fd, 0, SCE_SEEK_SET);
+  if (sz <= 0 || sz >= 2 * 1024 * 1024) {
+    gui_log("art bad size sz=%d %.60s", sz, path);
+    sceIoClose(fd);
+    return;
+  }
+  unsigned char *buf = malloc((unsigned)sz);
+  if (buf && sceIoRead(fd, buf, (SceSize)sz) == sz) {
+    int w = 0, h = 0;
+    unsigned char *img = stbi_load_from_memory(buf, sz, &w, &h, NULL, 3);
+    if (img && w > 0 && h > 0) {
+      unsigned char *dst = malloc(PW * PH * 3);
+      if (dst) {
+        for (int y = 0; y < PH; y++) {
+          int sy = y * h / PH;
+          for (int x = 0; x < PW; x++) {
+            int sx = x * w / PW;
+            memcpy(dst + (y * PW + x) * 3,
+              img + (sy * w + sx) * 3, 3);
+          }
+        }
+        pg_img[cell] = dst;
+      }
+      stbi_image_free(img);
+    } else {
+      gui_log("art decode FAIL sz=%d %.60s", sz, path);
+    }
+  }
+  free(buf);
+  sceIoClose(fd);
+}
+
 // Boot-time framebuffer grab: CDRAM fragments as net/ssl/player blocks
 // come and go, so claim our 2MB while the heap is pristine. Failure
 // here (logged) beats a silent kick-back at library-entry time.
@@ -237,7 +291,7 @@ static void fetch_thumb(const char *server, const char *token,
 }
 
 int gui_browse(const char *title, const browse_item_t *items, int n,
-    const char *server, const char *token) {
+    const char *server, const char *token, const char *notice) {
   if (!g_fb) {
     // Scanout needs CDRAM (physically contiguous): malloc'd heap
     // shows as a white screen (v01.24 photo). Same recipe debugScreen
@@ -269,8 +323,8 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
     sceCtrlPeekBufferPositive(0, &pad, 1);
     int pressed = pad.buttons & ~old.buttons;
     old = pad;
-    if (pressed & SCE_CTRL_START) return -2;
-    if (pressed & SCE_CTRL_CIRCLE) return -1;
+    if (pressed & SCE_CTRL_START) { page_free(); return -2; }
+    if (pressed & SCE_CTRL_CIRCLE) { page_free(); return -1; }
     if (pressed & SCE_CTRL_LEFT) { cursor--; dirty = 1; }
     if (pressed & SCE_CTRL_RIGHT) { cursor++; dirty = 1; }
     if (pressed & SCE_CTRL_UP) { cursor -= COLS; dirty = 1; }
@@ -279,13 +333,26 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
     if (cursor >= n) cursor = n - 1;
     int newpage = cursor / PAGE;
     if (newpage != page) { page = newpage; dirty = 1; }
-    if ((pressed & SCE_CTRL_CROSS) && n > 0) return cursor;
+    if ((pressed & SCE_CTRL_CROSS) && n > 0) { page_free(); return cursor; }
 
-    // Fetch this page's posters once (blocking, small thumbs).
+    // Fetch this page's posters once (blocking, small thumbs), then
+    // decode them into the RAM cache once. Repaints never touch
+    // the network or the filesystem.
     if (art_page != page) {
       for (int i = page * PAGE; i < (page + 1) * PAGE && i < n; i++)
         if (items[i].thumb[0])
           fetch_thumb(server, token, items[i].thumb);
+      page_free();
+      int ok = 0;
+      for (int i = page * PAGE; i < (page + 1) * PAGE && i < n; i++) {
+        if (!items[i].thumb[0]) continue;
+        char path[256];
+        art_path(items[i].thumb, path, sizeof(path));
+        page_decode_cell(i - page * PAGE, path);
+        if (pg_img[i - page * PAGE]) ok++;
+      }
+      pg_cached = page;
+      gui_log("gui page=%d decoded %d from cache dir", page, ok);
       art_page = page;
       dirty = 1;
     }
@@ -307,39 +374,15 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
         int cy = TOP + (cell / COLS) * 240;
         int px = cx + (CELLW - PW) / 2, py = cy;
         int sel = (i == cursor);
-        // Poster or fallback tile.
+        // Poster (from the RAM decode cache) or fallback tile.
         int drawn = 0;
-        if (items[i].thumb[0]) {
+        if (pg_cached == page && pg_img[cell]) {
           art_try++;
-          char path[256];
-          art_path(items[i].thumb, path, sizeof(path));
-          SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0);
-          if (fd >= 0) {
-            int sz = (int)sceIoLseek(fd, 0, SCE_SEEK_END);
-            sceIoLseek(fd, 0, SCE_SEEK_SET);
-            if (sz > 0 && sz < 2 * 1024 * 1024) {
-              unsigned char *buf = malloc((unsigned)sz);
-              if (buf && sceIoRead(fd, buf, (SceSize)sz) == sz) {
-                int w = 0, h = 0;
-                unsigned char *img = stbi_load_from_memory(
-                  buf, sz, &w, &h, NULL, 3);
-                if (img) {
-                  blit_rgb(img, w, h, px, py, PW, PH);
-                  stbi_image_free(img);
-                  drawn = 1;
-                  art_ok++;
-                } else {
-                  gui_log("art decode FAIL sz=%d %.60s", sz, path);
-                }
-              }
-              free(buf);
-            } else {
-              gui_log("art bad size sz=%d %.60s", sz, path);
-            }
-            sceIoClose(fd);
-          } else {
-            gui_log("art missing %.60s", path);
-          }
+          blit_rgb(pg_img[cell], PW, PH, px, py, PW, PH);
+          drawn = 1;
+          art_ok++;
+        } else if (items[i].thumb[0]) {
+          art_try++;
         }
         if (!drawn) {
           rect(px, py, PW, PH, C_TILE);
@@ -353,6 +396,8 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
         draw_text_trunc(items[i].title, px - 8, py + PH + 6, 11, C_WHITE);
       }
       draw_text("X play   O back   START quits", 16, FB_H - 32, C_GREY);
+      if (notice && notice[0])
+        draw_text_trunc(notice, 16, FB_H - 56, 52, C_ORANGE);
       char ac[32];
       snprintf(ac, sizeof(ac), "art %d/%d", art_ok, art_try);
       draw_text(ac, FB_W - 160, FB_H - 32, C_GREY);
@@ -368,8 +413,9 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
 
 #include "gui.h"
 int gui_browse(const char *title, const browse_item_t *items, int n,
-    const char *server, const char *token) {
+  const char *server, const char *token, const char *notice) {
   (void)title; (void)items; (void)n; (void)server; (void)token;
+  (void)notice;
   return -1; // host stub
 }
 
