@@ -105,6 +105,10 @@ int main(void) {
   } act_t;
   act_t pending = ACT_NONE;
   static char status[256] = { 0 };
+  // Dirty-flag rendering: the loop polls input every frame but only
+  // repaints when something changed. Repainting every frame with no
+  // vsync tears visibly (flicker on boot and in every menu).
+  int dirty = 1;
 
   SceCtrlData pad, old = { 0 };
   memset(&old, 0, sizeof(old));
@@ -115,15 +119,16 @@ int main(void) {
     int up = update_check(dl, sizeof(dl), tag, sizeof(tag));
     if (up > 0) {
       int choice = -1;
+      // Draw once, then poll without repainting (see dirty flag below).
+      DBG_CLEAR();
+      ui_bar("Update available");
+      ui_center("A newer build is ready:");
+      char line[64];
+      snprintf(line, sizeof(line), "%s  ->  %s", APP_VERSION, tag);
+      ui_center(line);
+      ui_blank();
+      ui_center("[ X ] Download + install      [ O ] Skip");
       while (choice < 0) {
-        DBG_CLEAR();
-        ui_bar("Update available");
-        ui_center("A newer build is ready:");
-        char line[64];
-        snprintf(line, sizeof(line), "%s  ->  %s", APP_VERSION, tag);
-        ui_center(line);
-        ui_blank();
-        ui_center("[ X ] Download + install      [ O ] Skip");
         sceCtrlPeekBufferPositive(0, &pad, 1);
         int pressed = pad.buttons & ~old.buttons;
         old = pad;
@@ -214,6 +219,9 @@ int main(void) {
       }
     }
 
+    // Any button press may have changed state: schedule one repaint.
+    if (pressed) dirty = 1;
+
     // ---- pending network action: paint "Working..." first ----
     if (pending != ACT_NONE) {
       DBG_CLEAR();
@@ -239,7 +247,8 @@ int main(void) {
             "Code ready - enter it at plex.tv/link, then press X");
         } else {
           snprintf(status, sizeof(status),
-            "Network error - check Vita Wi-Fi, then press X to retry");
+            "plex.tv unreachable (HTTP %d) - check Vita date/time, then X",
+            http_last_status());
         }
         break;
       case ACT_PIN_POLL:
@@ -254,7 +263,8 @@ int main(void) {
           snprintf(status, sizeof(status), "Signed in!");
         } else {
           snprintf(status, sizeof(status),
-            "Not approved yet - enter the code at plex.tv/link, then X");
+            "Not approved yet (HTTP %d) - code at plex.tv/link, then X",
+            http_last_status());
         }
         break;
       case ACT_FETCH_SEC:
@@ -292,11 +302,17 @@ int main(void) {
         break;
       }
       pending = ACT_NONE;
+      dirty = 1; // result changed status/screen: repaint once
       sceKernelDelayThread(33000);
       continue;
     }
 
-    // ---- render ----
+    // ---- render (only when dirty) ----
+    if (!dirty) {
+      sceKernelDelayThread(33000);
+      continue;
+    }
+    dirty = 0;
     DBG_CLEAR();
     if (s == S_LOGIN) {
       ui_bar("Sign in");

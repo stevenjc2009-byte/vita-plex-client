@@ -16,6 +16,11 @@
 #include <string.h>
 static SceUID net_memid = -1;
 static int inited = 0;
+// Last HTTP status seen (or negative SceHttp error). Shown in the UI
+// so failures are diagnosable instead of a bare "network error".
+static int last_status = 0;
+
+int http_last_status(void) { return last_status; }
 
 int http_init(void) {
   if (inited) return 0;
@@ -95,7 +100,9 @@ static int run(const char *url, const char *client_id, const char *accept,
 
   int status = 0;
   if (sceHttpGetStatusCode(req, &status) < 0) goto out;
-  if (status != 200) goto out;
+  last_status = status;
+  // plex.tv PIN creation answers 201 Created, not 200 — accept any 2xx.
+  if (status < 200 || status >= 300) goto out;
 
   for (;;) {
     if (used + 1024 >= body_len) break;
@@ -190,5 +197,6 @@ int http_download(const char *u, const char *p,
   (void)u; (void)p; (void)cb;
   return -1;
 }
+int http_last_status(void) { return 0; }
 
 #endif
