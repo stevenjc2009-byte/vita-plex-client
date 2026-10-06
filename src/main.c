@@ -347,21 +347,7 @@ int main(void) {
       if ((pressed & SCE_CTRL_UP) && cursor > 0) cursor--;
       if (pressed & SCE_CTRL_DOWN) cursor++;
       if (s == S_LOGIN) {
-        if (st.token[0]) {
-          // Account stays linked across O/logout and relaunches.
-          if (pressed & SCE_CTRL_CROSS) {
-            s = S_SECTIONS;
-            need_fetch = 1;
-            cursor = 0;
-            status[0] = 0;
-          }
-          if (pressed & SCE_CTRL_CIRCLE) {
-            st.token[0] = 0; // explicit unlink only
-            settings_save(&st);
-            memset(&pin, 0, sizeof(pin));
-            snprintf(status, sizeof(status), "Account unlinked");
-          }
-        } else if (!pin.pin_id) {
+        if (!pin.pin_id) {
           if (pressed & SCE_CTRL_CROSS) pending = ACT_PIN_CREATE;
           if (pressed & SCE_CTRL_TRIANGLE) {
             char tok[128];
@@ -392,13 +378,8 @@ int main(void) {
           cursor = 0;
           status[0] = 0;
         }
-        if (pressed & SCE_CTRL_CIRCLE) {
-          // O only leaves the libraries: the token stays saved, so
-          // re-entry never asks for it again (v01.27 wiped it here).
-          s = S_LOGIN;
-          memset(&pin, 0, sizeof(pin));
-          status[0] = 0;
-        }
+        // No logout: login is one-time. A rejected token clears
+        // itself (see ACT_FETCH_SEC) and returns here alone.
       } else if (s == S_ITEMS) {
         // The poster grid owns all input while visible (blocking call
         // in render below): X-play/O-back live there, not here.
@@ -476,9 +457,16 @@ int main(void) {
             snprintf(status, sizeof(status), "Signed in, but no libraries found");
           else
             status[0] = 0;
+        } else if (http_last_status() == 401) {
+          // Token rejected: drop it and show the one-time login.
+          st.token[0] = 0;
+          settings_save(&st);
+          memset(&pin, 0, sizeof(pin));
+          s = S_LOGIN;
+          snprintf(status, sizeof(status), "Token rejected - sign in again");
         } else {
           snprintf(status, sizeof(status),
-            "Server unreachable (%.60s) - O to logout, START quits",
+            "Server unreachable (%.60s) - START quits",
             st.server);
         }
         need_fetch = 0;
@@ -519,13 +507,7 @@ int main(void) {
       ui_bar("Sign in");
       ui_center("P L E X");
       ui_blank();
-      if (st.token[0]) {
-        ui_center("Account linked.");
-        ui_blank();
-        ui_center("[ X ]  Browse libraries");
-        ui_blank();
-        ui_center("[ O ]  Unlink account");
-      } else if (!pin.pin_id) {
+      if (!pin.pin_id) {
         ui_center("Link this Vita to your Plex account:");
         ui_blank();
         ui_center("1.  Press X to get a 4-letter link code");
@@ -563,7 +545,7 @@ int main(void) {
         ui_row(i == cursor, sections[i].title);
       if (!n_sec) ui_center("(loading...)");
       ui_status(status);
-      ui_footer("Up/Down move   X open   O logout   START quits");
+      ui_footer("Up/Down move   X open   START quits");
     } else if (s == S_ITEMS) {
       if (need_fetch) {
         pending = ACT_FETCH_ITEMS;
