@@ -19,6 +19,13 @@ jobs:
       - name: Build
         run: cmake --build build
 
+      - name: Dump ELF layout (debug)
+        if: failure()
+        run: |
+          arm-vita-eabi-gcc --version
+          arm-vita-eabi-readelf -l build/vita-plex-client | head -30
+          arm-vita-eabi-readelf -S build/vita-plex-client | head -40
+
       - name: Release VPK
         uses: softprops/action-gh-release@v2
         with:
