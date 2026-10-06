@@ -347,7 +347,21 @@ int main(void) {
       if ((pressed & SCE_CTRL_UP) && cursor > 0) cursor--;
       if (pressed & SCE_CTRL_DOWN) cursor++;
       if (s == S_LOGIN) {
-        if (!pin.pin_id) {
+        if (st.token[0]) {
+          // Account stays linked across O/logout and relaunches.
+          if (pressed & SCE_CTRL_CROSS) {
+            s = S_SECTIONS;
+            need_fetch = 1;
+            cursor = 0;
+            status[0] = 0;
+          }
+          if (pressed & SCE_CTRL_CIRCLE) {
+            st.token[0] = 0; // explicit unlink only
+            settings_save(&st);
+            memset(&pin, 0, sizeof(pin));
+            snprintf(status, sizeof(status), "Account unlinked");
+          }
+        } else if (!pin.pin_id) {
           if (pressed & SCE_CTRL_CROSS) pending = ACT_PIN_CREATE;
           if (pressed & SCE_CTRL_TRIANGLE) {
             char tok[128];
@@ -379,8 +393,8 @@ int main(void) {
           status[0] = 0;
         }
         if (pressed & SCE_CTRL_CIRCLE) {
-          st.token[0] = 0;
-          settings_save(&st);
+          // O only leaves the libraries: the token stays saved, so
+          // re-entry never asks for it again (v01.27 wiped it here).
           s = S_LOGIN;
           memset(&pin, 0, sizeof(pin));
           status[0] = 0;
@@ -505,7 +519,13 @@ int main(void) {
       ui_bar("Sign in");
       ui_center("P L E X");
       ui_blank();
-      if (!pin.pin_id) {
+      if (st.token[0]) {
+        ui_center("Account linked.");
+        ui_blank();
+        ui_center("[ X ]  Browse libraries");
+        ui_blank();
+        ui_center("[ O ]  Unlink account");
+      } else if (!pin.pin_id) {
         ui_center("Link this Vita to your Plex account:");
         ui_blank();
         ui_center("1.  Press X to get a 4-letter link code");
