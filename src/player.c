@@ -15,6 +15,7 @@
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/sysmodule.h>
 #include <psp2/types.h>
+#include <stdlib.h>
 #include <string.h>
 
 void psvDebugScreenInit(void);
@@ -26,8 +27,8 @@ static SceAvPlayerHandle handle = -1;
 static volatile int stop_flag = 0;
 static volatile int audio_port = -1;
 
-// 960x544x32bpp scanout buffer.
-static unsigned int framebuf[FB_W * FB_H];
+// 960x544x32bpp scanout buffer (heap: keeps .bss small for the ELF tools).
+static unsigned int *framebuf = NULL;
 
 static int clamp8(int v) {
   if (v < 0) return 0;
@@ -170,7 +171,9 @@ int player_active(void) {
 void player_run_blocking(void) {
   if (handle < 0) return;
   stop_flag = 0;
-  memset(framebuf, 0, sizeof(framebuf));
+  framebuf = malloc(FB_W * FB_H * sizeof(*framebuf));
+  if (!framebuf) return;
+  memset(framebuf, 0, FB_W * FB_H * sizeof(*framebuf));
 
   SceUID atid = sceKernelCreateThread("plex_audio", audio_thread,
     0x10000100, 0x4000, 0, 0, NULL);
@@ -200,6 +203,8 @@ void player_run_blocking(void) {
     sceKernelDeleteThread(atid);
   }
   player_stop();
+  free(framebuf);
+  framebuf = NULL;
   psvDebugScreenInit(); // hand the screen back to the text UI
 }
 
