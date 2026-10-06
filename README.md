@@ -1,5 +1,7 @@
 # Plex for PlayStation Vita
 
+01.36 fixes a native decoder handle being mistaken for a negative error: opaque handles such as `0x81400280` are valid even though the SDK exposes a signed integer type. The player now uses an empty handle of zero and separately recognizes AvPlayer error codes. High-bit handles are retained through playback, audio pumping and cleanup. Artwork retains its aspect ratio in both grids and details, including wide episode thumbnails; empty space is padded instead of stretching the image.
+
 Browse libraries, search movies and series, and play H.264/AAC streams prepared by your Plex server on a jailbroken Vita.
 
 ## Install and use

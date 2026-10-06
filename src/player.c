@@ -53,7 +53,9 @@ void psvDebugScreenInit(void);
 #define FB_W 960
 #define FB_H 544
 
-static SceAvPlayerHandle handle = -1;
+// Native AvPlayer handles are opaque pointer values, often 0x81xxxxxx.
+// Their signed representation is negative; zero denotes no player.
+static SceAvPlayerHandle handle;
 static volatile int stop_flag = 0;
 static volatile int audio_port = -1;
 static SceUID audio_tid = -1;
@@ -134,7 +136,7 @@ static int audio_thread(SceSize argc, void *argv) {
   int channels = 2;
 
   int rate=0,port_channels=0;
-  while (!stop_flag && handle >= 0) {
+  while (!stop_flag && handle != 0) {
     if(paused){sceKernelDelayThread(5000);continue;}
     SceAvPlayerFrameInfo fr;
     memset(&fr, 0, sizeof(fr));
@@ -207,7 +209,11 @@ int player_play_hls(const char *hls_url) {
   init.debugLevel = 0;
 
   handle = sceAvPlayerInit(&init);
-  if (handle < 0) { plog("play init FAIL r=0x%X", handle); return handle; }
+  if (!handle || ((uint32_t)handle & 0xFFFF0000u)==0x806A0000u) {
+    int error=handle?handle:(int)0x806A0003u;
+    handle=0;plog("play init FAIL r=0x%X",error);return error;
+  }
+  plog("play init OK");
 
   r = sceAvPlayerAddSource(handle, hls_url);
   plog("play addsrc r=0x%X", r); // URLs contain the private Plex token
@@ -218,7 +224,7 @@ int player_play_hls(const char *hls_url) {
 }
 
 int player_active(void) {
-  if (handle < 0) return 0;
+  if (!handle) return 0;
   return sceAvPlayerIsActive(handle) == SCE_TRUE;
 }
 
@@ -226,7 +232,7 @@ int player_active(void) {
 // -1 no handle, -2 framebuffer alloc fail, -3 stream never went
 // active within 45s (bad URL / server refused), -4 user cancelled wait.
 int player_run_media(const char *title,unsigned duration,unsigned base_offset,int audio_only) {
-  if (handle < 0) return -1;
+  if (!handle) return -1;
   stop_flag = 0;audio_seen=last_audio=0;performance_take_resume();touch_state_t touch;touch_init(&touch);
   fb_block = sceKernelAllocMemBlock("plex_video",
     SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
@@ -360,10 +366,10 @@ void player_stop(void) {
     sceAudioOutReleasePort(audio_port);
     audio_port = -1;
   }
-  if (handle >= 0) {
+  if (handle != 0) {
     sceAvPlayerStop(handle);
     sceAvPlayerClose(handle);
-    handle = -1;
+    handle = 0;
   }
   video_pool_shutdown();free(clean_frame);clean_frame=NULL;
   if (fb_block >= 0) {

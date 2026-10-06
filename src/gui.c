@@ -50,7 +50,8 @@ static int draw_buffer;
 #ifdef __vita__
 static SceUID fb_ids[2] = {-1,-1}, art_tid = -1;
 #endif
-static unsigned char *art[PAGE];
+typedef struct { int width,height; unsigned char pixels[PW*PH*3]; } artwork_t;
+static artwork_t *art[PAGE];
 static volatile int art_stop, art_version;
 static gui_view_t art_view;
 static int art_page;
@@ -204,11 +205,15 @@ static void shell(const char *title,const char *subtitle,int nav) {
   text(subtitle,202,65,0,GREY,720);
   rect(200,100,724,1,TILE);
 }
-static void poster(const unsigned char *img,int x,int y,int w,int h) {
+static void poster(const artwork_t *img,int x,int y,int w,int h) {
   if(!img)return;
+  int dw=w,dh=(int)((int64_t)w*img->height/img->width);
+  if(dh>h){dh=h;dw=(int)((int64_t)h*img->width/img->height);}
+  if(dw<1)dw=1;if(dh<1)dh=1;
+  x+=(w-dw)/2;y+=(h-dh)/2;w=dw;h=dh;
   for(int r=0;r<h;r++)for(int c=0;c<w;c++) {
-    int sy=r*PH/h,sx=c*PW/w;
-    const unsigned char *p=img+(sy*PW+sx)*3;
+    int sy=r*img->height/h,sx=c*img->width/w;
+    const unsigned char *p=img->pixels+(sy*img->width+sx)*3;
     if(x+c>=0 && x+c<W && y+r>=0 && y+r<H)
       fb[(y+r)*W+x+c]=p[0]|(p[1]<<8)|(p[2]<<16)|0xFF000000u;
   }
@@ -234,7 +239,7 @@ static void draw_grid(const gui_view_t *v,int nav) {
     } else {
       int x=214+(cell%cols)*144,y=128+(cell/cols)*184;
       rect(x,y,PW,PH,TILE);
-      unsigned char *img=__atomic_load_n(art+cell,__ATOMIC_ACQUIRE);
+      artwork_t *img=__atomic_load_n(art+cell,__ATOMIC_ACQUIRE);
       if(img)poster(img,x,y,PW,PH);
       else {text(kind(it),x+10,y+38,0,GOLD,PW-18);wrap(it->title,x+10,y+64,PW-20,2);}
       if(it->view_count){rect(x,y,PW,22,PANEL);text("WATCHED",x+8,y+1,0,GOLD,PW-12);}
@@ -268,7 +273,7 @@ static void cache_path(const char *server,const char *thumb,char out[120]) {
 #ifdef __vita__
 static void cache_trim(unsigned reserve);
 #endif
-static unsigned char *load_art(const gui_view_t *v,const browse_item_t *it) {
+static artwork_t *load_art(const gui_view_t *v,const browse_item_t *it) {
   if(!it->thumb[0] || !v->server || !v->token)return NULL;
   char path[120],url[1800],enc[768],tok[384];cache_path(v->server,it->thumb,path);
   FILE *file=fopen(path,"rb");
@@ -276,7 +281,7 @@ static unsigned char *load_art(const gui_view_t *v,const browse_item_t *it) {
   if(!file && !art_stop) {
     cache_trim(512*1024);
     plex_url_encode(it->thumb,enc,sizeof(enc));plex_url_encode(v->token,tok,sizeof(tok));
-    snprintf(url,sizeof(url),"%s/photo/:/transcode?width=160&height=240&minSize=1&format=jpeg&url=%s&X-Plex-Token=%s",v->server,enc,tok);
+    snprintf(url,sizeof(url),"%s/photo/:/transcode?width=160&height=240&minSize=0&format=jpeg&url=%s&X-Plex-Token=%s",v->server,enc,tok);
     if(http_download_art(url,path,&art_stop)==0)file=fopen(path,"rb");
   }
 #else
@@ -285,12 +290,16 @@ static unsigned char *load_art(const gui_view_t *v,const browse_item_t *it) {
   if(!file)return NULL;
   fseek(file,0,SEEK_END);long len=ftell(file);rewind(file);
   if(len<=0 || len>512*1024){fclose(file);remove(path);return NULL;}
-  unsigned char *data=malloc((size_t)len),*img=NULL,*result=NULL;int w,h,comp;
+  unsigned char *data=malloc((size_t)len),*img=NULL;artwork_t *result=NULL;int w,h,comp;
   if(data && fread(data,1,(size_t)len,file)==(size_t)len &&
       stbi_info_from_memory(data,(int)len,&w,&h,&comp) && w>0 && h>0 && w<=2048 && h<=2048)
     img=stbi_load_from_memory(data,(int)len,&w,&h,&comp,3);
-  if(img && (result=malloc(PW*PH*3)))
-    for(int y=0;y<PH;y++)for(int x=0;x<PW;x++)memcpy(result+(y*PW+x)*3,img+((y*h/PH)*w+x*w/PW)*3,3);
+  if(img && (result=malloc(sizeof(*result)))) {
+    int dw=PW,dh=(int)((int64_t)PW*h/w);
+    if(dh>PH){dh=PH;dw=(int)((int64_t)PH*w/h);}
+    if(dw<1)dw=1;if(dh<1)dh=1;result->width=dw;result->height=dh;
+    for(int y=0;y<dh;y++)for(int x=0;x<dw;x++)memcpy(result->pixels+(y*dw+x)*3,img+((y*h/dh)*w+x*w/dw)*3,3);
+  }
   stbi_image_free(img);free(data);fclose(file);
   if(!img)remove(path);
   return result;
@@ -300,7 +309,7 @@ static int art_worker(SceSize argc,void *arg) {
   (void)argc;(void)arg;
   for(int cell=0;cell<PAGE && !art_stop;cell++) {
     int i=art_page*PAGE+cell;if(i>=art_view.n)break;
-    unsigned char *img=load_art(&art_view,art_view.items+i);
+    artwork_t *img=load_art(&art_view,art_view.items+i);
     if(art_stop){free(img);break;}
     __atomic_store_n(art+cell,img,__ATOMIC_RELEASE);__atomic_add_fetch(&art_version,1,__ATOMIC_RELEASE);
   }
@@ -479,7 +488,7 @@ int gui_keyboard(const char *title,char *value,unsigned size,int masked) {
 }
 int gui_details(const browse_item_t *it,const char *server,const char *token,const char *notice) {
   gui_view_t v={.server=server,.token=token};art_stop=0;
-  unsigned char *img=NULL;
+  artwork_t *img=NULL;
   (void)v;
   // Details only use an existing poster; never block controller input for artwork.
   char art_path[120];cache_path(server,it->thumb,art_path);FILE *cached=fopen(art_path,"rb");
