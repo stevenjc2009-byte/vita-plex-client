@@ -15,7 +15,7 @@ void plex_auth_headers(const char *client_id, char *out, unsigned out_len) {
 }
 
 void plex_pin_create_url(char *out, unsigned out_len) {
-  snprintf(out, out_len, "https://plex.tv/api/v2/pins?strong=true");
+  snprintf(out, out_len, "https://plex.tv/api/v2/pins?strong=false");
 }
 
 void plex_pin_poll_url(int pin_id, char *out, unsigned out_len) {

@@ -173,10 +173,10 @@ int http_get(const char *url, const char *client_id, const char *accept,
     char *body, unsigned body_len) {
   return run(url, client_id, accept, SCE_HTTP_METHOD_GET, body, body_len);
 }
-int http_download(const char *url, const char *path,
-    void (*progress_cb)(unsigned received, unsigned total)) {
+static int download(const char *url, const char *path,
+    void (*progress_cb)(unsigned received, unsigned total), volatile int *cancel) {
   int code = -1, tmpl = -1, conn = -1, req = -1, fd = -1, r;
-  static char chunk[8192];
+  char chunk[8192];
   unsigned received = 0, total = 0;
   unsigned long long len64 = 0;
   int have_length = 0;
@@ -191,10 +191,10 @@ int http_download(const char *url, const char *path,
   if (req < 0) { last_error = req; goto out; }
   // Release assets 302-redirect to object storage.
   sceHttpSetAutoRedirect(req, 1);
-  sceHttpSetResolveTimeOut(req, 10 * 1000 * 1000);
-  sceHttpSetConnectTimeOut(req, 10 * 1000 * 1000);
-  sceHttpSetSendTimeOut(req, 15 * 1000 * 1000);
-  sceHttpSetRecvTimeOut(req, 20 * 1000 * 1000);
+  sceHttpSetResolveTimeOut(req, (cancel ? 2 : 10) * 1000 * 1000);
+  sceHttpSetConnectTimeOut(req, (cancel ? 2 : 10) * 1000 * 1000);
+  sceHttpSetSendTimeOut(req, (cancel ? 3 : 15) * 1000 * 1000);
+  sceHttpSetRecvTimeOut(req, (cancel ? 3 : 20) * 1000 * 1000);
 
   r = sceHttpSendRequest(req, NULL, 0);
   if (r < 0) { last_error = r; goto out; }
@@ -213,6 +213,7 @@ int http_download(const char *url, const char *path,
   if (fd < 0) { last_error = fd; goto out; }
 
   for (;;) {
+    if (cancel && *cancel) { last_error = -1; goto out; }
     r = sceHttpReadData(req, chunk, sizeof(chunk));
     if (r < 0) { last_error = r; goto out; }
     if (r == 0) break;
@@ -234,6 +235,11 @@ out:
   if (tmpl >= 0) sceHttpDeleteTemplate(tmpl);
   return code;
 }
+int http_download(const char *url, const char *path,
+    void (*cb)(unsigned, unsigned)) { return download(url,path,cb,NULL); }
+int http_download_art(const char *url,const char *path,volatile int *cancel) {
+  return download(url,path,NULL,cancel);
+}
 
 #else
 
@@ -252,6 +258,9 @@ int http_download(const char *u, const char *p,
     void (*cb)(unsigned, unsigned)) {
   (void)u; (void)p; (void)cb;
   return -1;
+}
+int http_download_art(const char *u,const char *p,volatile int *cancel) {
+  (void)u; (void)p; (void)cancel; return -1;
 }
 int http_last_status(void) { return 0; }
 int http_last_error(void) { return 0; }

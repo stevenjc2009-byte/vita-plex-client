@@ -1,7 +1,7 @@
 param([string]$Compiler = 'gcc')
 $ErrorActionPreference = 'Stop'
 $plexRoot = Split-Path $PSScriptRoot -Parent
-$plexScratch = Join-Path ([IO.Path]::GetTempPath()) ('plex-tests-' + [guid]::NewGuid())
+$plexScratch = Join-Path $plexRoot ('build/host-tests-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $plexScratch | Out-Null
 Push-Location $plexRoot
 try {

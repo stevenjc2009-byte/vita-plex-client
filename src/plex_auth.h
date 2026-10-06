@@ -16,7 +16,7 @@ typedef struct {
 void plex_auth_headers(const char *client_id,
   char *out, unsigned out_len);
 
-// POST https://plex.tv/api/v2/pins?strong=true -> returns pin id + code.
+// POST https://plex.tv/api/v2/pins?strong=false -> returns pin id + link code.
 // Parse with plex_parse_pin_create(). GET poll URL with plex_pin_poll_url().
 // When user approved, poll response contains "authToken":"...".
 void plex_pin_create_url(char *out, unsigned out_len);

@@ -1,4 +1,5 @@
 #pragma once
+#include "settings.h"
 
 // Vita-safe Plex profile: 960x544 screen, H.264 Baseline/Main <= 720p,
 // AAC stereo. Server must transcode everything else to this.
@@ -18,3 +19,7 @@ void plex_build_vita_transcode_url(
 // Builds direct library-sections browse URL.
 void plex_build_sections_url(
   const char *server, const char *token, char *out, unsigned out_len);
+int plex_build_playback_url(const settings_t *settings, const char *key,
+  const char *session, unsigned offset_ms, char *out, unsigned size);
+int plex_hls_media_url(const char *playlist_url, const char *body,
+  const char *token, char *out, unsigned size);

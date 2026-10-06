@@ -1,673 +1,272 @@
-// Vita Plex Client — login + browse + play.
-// X = confirm/select, O = back, up/down = move, START = quit.
-
-#include <stdio.h>
-#include <string.h>
-#include <stdarg.h>
-
-#ifdef __vita__
-#include <psp2/ctrl.h>
-#include <psp2/kernel/processmgr.h>
-#include <psp2/kernel/sysmem.h>
-#include <psp2/kernel/threadmgr.h>
-#include <psp2/io/fcntl.h>
-#include <psp2/io/stat.h>
-#include <psp2/ime_dialog.h>
-#include <psp2/apputil.h>
-#include <psp2/gxm.h>
-#include <psp2/display.h>
-#include <psp2/sysmodule.h>
-#include "debugScreen.h"
-#define DBG_INIT() psvDebugScreenInit()
-// NOTE: "\033[2J" only wipes pixels — the cursor stays where it was,
-// so every frame printed lower and lower ("waterfall" bug). "\033[H"
-// homes the cursor, which is what makes clear-then-redraw work.
-#define DBG_CLEAR() psvDebugScreenPuts("\033[2J\033[H")
-#define DBG_PRINT(...) psvDebugScreenPrintf(__VA_ARGS__)
-#else
-#define DBG_INIT() ((void)0)
-#define DBG_CLEAR() ((void)0)
-#define DBG_PRINT(...) printf(__VA_ARGS__)
-#endif
-
+#include "browse.h"
 #include "plex.h"
 #include "plex_auth.h"
-#include "browse.h"
 #include "settings.h"
 #include "http.h"
 #include "player.h"
 #include "update.h"
 #include "gui.h"
-
-#ifndef __vita__
-static int host_demo(void);
-#endif
-
-typedef enum { S_LOGIN, S_SECTIONS, S_ITEMS, S_PLAY } screen_t;
-
+#include <stdio.h>
+#include <string.h>
 #ifdef __vita__
-// Plex brand colors: near-black background, #E5A00D orange accent.
-#define C_BG "\033[48;2;26;26;26m"
-#define C_FG "\033[38;2;245;245;245m"
-#define C_ORANGE_BG "\033[48;2;229;160;13m"
-#define C_ORANGE_FG "\033[38;2;229;160;13m"
-#define C_BLACK_FG "\033[38;2;0;0;0m"
-#define UI_COLS 60 // 960px / 16px glyphs at the global 2x font
+#include <psp2/ctrl.h>
+#include <psp2/kernel/processmgr.h>
+#include <psp2/io/stat.h>
+#include <psp2/io/fcntl.h>
+#include "debugScreen.h"
 
-static void ui_theme(void) { DBG_PRINT(C_BG C_FG); }
+// Decoded posters, font atlases, XML pages and AvPlayer's generic allocations
+// share this heap. The default newlib heap is too small for large libraries.
+unsigned int sceLibcHeapSize=32*1024*1024;
+typedef struct {
+  char title[160],path[384],search[128],section[32];
+  int offset,cursor;
+} location_t;
+static location_t locations[32];
+static browse_item_t items[BROWSE_MAX_ITEMS];
+static char body[512*1024],notice[256],url[4096];
+static const char *sorts[]={"titleSort:asc","addedAt:desc","year:desc"};
+static const char *sort_names[]={"Title A-Z","Recently added","Newest year"};
 
-// Full-width orange bar, then back to the dark theme.
-static void ui_bar(const char *label) {
-  char line[128];
-  snprintf(line, sizeof(line), "  PLEX for Vita v%s  |  %s",
-    APP_VERSION, label);
-  int pad = UI_COLS - (int)strlen(line);
-  if (pad < 0) pad = 0;
-  DBG_PRINT(C_ORANGE_BG C_BLACK_FG "%s%*s" C_BG C_FG "\n\n", line, pad, "");
+static void save(settings_t *st) {
+  if(settings_save(st)<0)snprintf(notice,sizeof(notice),"Could not save settings. Check free space in ux0:data.");
 }
-
-static void ui_center(const char *s) {
-  int pad = (UI_COLS - (int)strlen(s)) / 2;
-  if (pad < 1) pad = 1;
-  DBG_PRINT("%*s%s\n", pad, "", s);
+static int request(settings_t *st,const char *target,const char *accept) {
+  if(http_get(target,st->client_id,accept,body,sizeof(body))==0)return 0;
+  int status=http_last_status();
+  if(status==401 || status==403)snprintf(notice,sizeof(notice),"Server denied access (%d). Check the token and server in Settings.",status);
+  else snprintf(notice,sizeof(notice),"Server request failed (HTTP %d, error 0x%X). Square retries; SELECT opens Settings.",status,http_last_error());
+  return -1;
 }
-
-static void ui_blank(void) { DBG_PRINT("\n"); }
-
-// Persistent status line, shown every frame until replaced.
-static void ui_status(const char *s) {
-  if (!s || !s[0]) return;
-  DBG_PRINT("\n" C_ORANGE_FG "  %s" C_FG "\n", s);
-}
-
-static void ui_footer(const char *s) {
-  DBG_PRINT("\n");
-  ui_center(s);
-}
-
-// Left-aligned list row with truncation: centered long titles looked
-// overlapped/ragged in browse photos. Cap at UI_COLS - 6 chars.
-static void ui_row(int selected, const char *title) {
-  char t[64];
-  snprintf(t, sizeof(t), "%s", title);
-  if ((int)strlen(t) > UI_COLS - 6) {
-    t[UI_COLS - 9] = 0;
-    strncat(t, "...", sizeof(t) - strlen(t) - 1);
+static int discover(settings_t *st) {
+  static plex_server_t servers[16];char tok[384];const char *rows[16];
+  plex_url_encode(st->account_token[0]?st->account_token:st->token,tok,sizeof(tok));
+  snprintf(url,sizeof(url),"https://plex.tv/api/resources?includeHttps=1&includeRelay=1&X-Plex-Token=%s",tok);
+  gui_message("Find servers","Looking for your Plex servers","This reads the servers registered to your Plex account.");
+  if(request(st,url,"text/xml"))return 0;
+  int n=plex_parse_servers(body,servers,16);
+  if(!n){snprintf(notice,sizeof(notice),"No Plex servers found. Enter the LAN server address manually.");return 0;}
+  for(int i=0;i<n;i++)rows[i]=servers[i].name[0]?servers[i].name:servers[i].url;
+  int selected=gui_choice("Choose server","LAN connections are preferred when available",rows,n);
+  if(selected==GUI_QUIT)return -1;
+  if(selected>=0) {
+    if(settings_server_url(servers[selected].url)<0){snprintf(notice,sizeof(notice),"The selected server address is invalid.");return 0;}
+    snprintf(st->server,sizeof(st->server),"%s",servers[selected].url);
+    if(servers[selected].token[0])snprintf(st->token,sizeof(st->token),"%s",servers[selected].token);
+    else snprintf(st->token,sizeof(st->token),"%s",st->account_token);
+    save(st);snprintf(notice,sizeof(notice),"Selected %s",servers[selected].name);return 1;
   }
-  if (selected) DBG_PRINT(C_ORANGE_FG);
-  DBG_PRINT("  %c %s\n", selected ? '>' : ' ', t);
-  if (selected) DBG_PRINT(C_FG);
+  return 0;
 }
-
-// File log for on-device diagnosis: ux0:data/plex-client/debug.log,
-// truncated at every boot. User copies it off via VitaShell USB/FTP.
-static SceUID logfd = -1;
-static void log_msg(const char *fmt, ...) {
-  if (logfd < 0) return;
-  char tmp[512];
-  unsigned t = sceKernelGetProcessTimeLow() / 1000; // ms since boot
-  int n = snprintf(tmp, sizeof(tmp), "[%u.%03u] ", t / 1000, t % 1000);
-  va_list ap;
-  va_start(ap, fmt);
-  n += vsnprintf(tmp + n, sizeof(tmp) - n - 2, fmt, ap);
-  va_end(ap);
-  if (n < 0) return;
-  if (n > (int)sizeof(tmp) - 3) n = sizeof(tmp) - 3;
-  tmp[n++] = '\n';
-  sceIoWrite(logfd, tmp, n);
-}
-
-// System keyboard prompt for pasting/typing the 20-char Plex token.
-// Used when plex.tv TLS is unreachable (old Vita SSL stack): the token
-// comes from Plex Web on a PC, everything after runs over plain LAN HTTP.
-// Built-in token keyboard. The system IME needs libgxm initialized, and
-// GXM init on this device either fails (small param buffer: 0x805B0017),
-// starves video memory for display buffers (0x80024309), or stalls the
-// driver outright - every combination wedged or failed across v01.08-01.16.
-// This needs only sceCtrl (proven working: X responds), so it cannot hang.
-// Global 2x font: the stock 8x8 glyphs are unreadably small on the
-// 960x544 panel (login/browse photos). Double each pixel into a static
-// 8KB buffer (no heap: malloc failure silently kept 1x in v01.18) and
-// install 16x16 dims. Idempotent: call after every psvDebugScreenInit21,
-// including the player's restore, which resets the font to 1x.
-static unsigned char ui_glyphs[16 * 16 * 256 / 8];
-static PsvDebugScreenFont ui_fontstruct;
-static void ui_font_2x(void) {
-  PsvDebugScreenFont *src = psvDebugScreenGetFont();
-  if (src->width == 16) return; // already installed
-  if (src->width != 8) return; // unknown base font: leave it alone
-  ui_fontstruct.width = 16;
-  ui_fontstruct.height = 16;
-  ui_fontstruct.first = src->first;
-  ui_fontstruct.last = src->last;
-  ui_fontstruct.size_w = 16;
-  ui_fontstruct.size_h = 16;
-  ui_fontstruct.glyphs = ui_glyphs;
-  memset(ui_glyphs, 0, sizeof(ui_glyphs));
-  for (int g = src->first; g <= src->last; g++)
-    for (int y = 0; y < 8; y++)
-      for (int x = 0; x < 8; x++) {
-        int sbit = (g - src->first) * 64 + y * 8 + x;
-        int s = (src->glyphs[sbit / 8] >> (7 - (sbit % 8))) & 1;
-        if (!s) continue;
-        for (int dy = 0; dy < 2; dy++)
-          for (int dx = 0; dx < 2; dx++) {
-            int tbit = (g - src->first) * 256 + (2 * y + dy) * 16 + (2 * x + dx);
-            ui_glyphs[tbit / 8] |= (unsigned char)(1 << (7 - (tbit % 8)));
-          }
+static int settings_screen(settings_t *st,const char *section) {
+  for(;;) {
+    char server[320],quality[100],resume[80],sorting[80];
+    snprintf(server,sizeof(server),"Server: %s",st->server);
+    snprintf(quality,sizeof(quality),"Video quality: %d Mbps (H.264 / AAC)",st->bitrate/1000);
+    snprintf(resume,sizeof(resume),"Resume playback: %s",st->resume?"On":"Off");
+    snprintf(sorting,sizeof(sorting),"Sort: %s",sort_names[st->sort]);
+    const char *rows[]={server,"Find and select Plex server","Enter / replace Plex token",quality,resume,sorting,
+      "Refresh libraries",section && *section?"Scan this library for new media":"Scan all libraries for new media",
+      "Check for app updates","About / controls","Back"};
+    int choice=gui_choice("Settings",notice[0]?notice:"Connection, playback and library preferences",rows,11);
+    if(choice==GUI_QUIT)return GUI_QUIT;
+    if(choice<0 || choice==10)return GUI_BACK;
+    if(choice==0) {
+      char candidate[256];snprintf(candidate,sizeof(candidate),"%s",st->server);
+      int r=gui_keyboard("Server address",candidate,sizeof(candidate),0);if(r==GUI_QUIT)return r;
+      if(r==0) {
+        if(settings_server_url(candidate)<0){snprintf(notice,sizeof(notice),"Use http://IP:32400 or https://hostname:port.");continue;}
+        snprintf(st->server,sizeof(st->server),"%s",candidate);save(st);return GUI_HOME;
       }
-  psvDebugScreenSetFont(&ui_fontstruct);
-}
-
-static int kb_prompt_token(char *out, unsigned out_len) {
-  static const char *rows[] = {
-    "abcdefghij", "klmnopqrst", "uvwxyzABCD", "EFGHIJKLMN",
-    "OPQRSTUVWX", "YZ01234567", "89-_"
-  };
-  static const int NROWS = 7, NCOLS = 10;
-  char tok[65];
-  unsigned tlen = 0;
-  int r = 0, c = 0;
-  memset(tok, 0, sizeof(tok));
-  SceCtrlData pad, old;
-  memset(&old, 0, sizeof(old));
-  log_msg("kb enter");
-  ui_font_2x(); // keyboard shares the global 2x font: no heap, no fail
-  log_msg("kb font %dx%d", psvDebugScreenGetFont()->width,
-    psvDebugScreenGetFont()->height);
-  for (;;) {
-    DBG_CLEAR();
-    DBG_PRINT("\n  Enter Plex token\n\n");
-    DBG_PRINT("  PC: app.plex.tv, F12 Console,\n");
-    DBG_PRINT("  localStorage.myPlexAccessToken\n\n");
-    char cur[80];
-    snprintf(cur, sizeof(cur), "[ %s%s ]", tok, tlen < 64 ? "_" : "");
-    DBG_PRINT(C_ORANGE_FG "  %s\n" C_FG "\n", cur);
-    for (int i = 0; i < NROWS; i++) {
-      char line[128];
-      int o = 0;
-      for (int j = 0; j < NCOLS && rows[i][j]; j++) {
-        if (i == r && j == c) o += snprintf(line + o, sizeof(line) - o,
-          "<%c>", rows[i][j]);
-        else o += snprintf(line + o, sizeof(line) - o,
-          " %c ", rows[i][j]);
+    } else if(choice==1) {int r=discover(st);if(r<0)return GUI_QUIT;if(r>0)return GUI_HOME;}
+    else if(choice==2) {
+      char token[128];snprintf(token,sizeof(token),"%s",st->account_token);
+      int r=gui_keyboard("Plex token",token,sizeof(token),1);if(r==GUI_QUIT)return r;
+      if(r==0){snprintf(st->token,sizeof(st->token),"%s",token);snprintf(st->account_token,sizeof(st->account_token),"%s",token);save(st);return GUI_HOME;}
+    } else if(choice==3) {st->bitrate=st->bitrate==1000?2000:st->bitrate==2000?4000:1000;save(st);}
+    else if(choice==4) {st->resume=!st->resume;save(st);}
+    else if(choice==5) {st->sort=(st->sort+1)%3;save(st);}
+    else if(choice==6)return GUI_HOME;
+    else if(choice==7) {
+      const char *confirm[]={"Start server scan","Cancel"};
+      int r=gui_choice("Scan media files","Plex will scan for new media in the background.",confirm,2);
+      if(r==GUI_QUIT)return r;
+      if(r==0) {
+        char path[128];snprintf(path,sizeof(path),"/library/sections/%s/refresh",section && *section?section:"all");
+        plex_build_page_url(st->server,st->token,path,"","",0,1,url,sizeof(url));
+        gui_message("Library scan","Asking Plex to scan","You can refresh the library after Plex finishes scanning.");
+        if(!request(st,url,"text/xml"))snprintf(notice,sizeof(notice),"Server scan requested. Refresh after Plex finishes.");
       }
-      line[o] = 0;
-      if (i == r) DBG_PRINT(C_ORANGE_FG);
-      DBG_PRINT("  %s\n", line);
-      if (i == r) DBG_PRINT(C_FG);
-    }
-    DBG_PRINT("\n  D-pad move   X pick   O delete\n");
-    DBG_PRINT("  /\\ done   START cancel\n");
-    // Wait for one button press, no auto-repeat (token entry is short).
-    int pressed = 0;
-    while (!pressed) {
-      sceCtrlPeekBufferPositive(0, &pad, 1);
-      pressed = pad.buttons & ~old.buttons;
-      old = pad;
-      sceKernelDelayThread(50000);
-    }
-    if (pressed & SCE_CTRL_START) {
-      log_msg("kb cancel");
-      return -1;
-    }
-    // Last row ("89-_") is short: clamp into it, and never emit its
-    // padding cells (rows[r][c] would be NUL and truncate the token).
-    int rowlen = (int)strlen(rows[r]);
-    if (c >= rowlen) c = rowlen - 1;
-    if (pressed & SCE_CTRL_UP) { r = (r + NROWS - 1) % NROWS; rowlen = (int)strlen(rows[r]); if (c >= rowlen) c = rowlen - 1; }
-    if (pressed & SCE_CTRL_DOWN) { r = (r + 1) % NROWS; rowlen = (int)strlen(rows[r]); if (c >= rowlen) c = rowlen - 1; }
-    if (pressed & SCE_CTRL_LEFT) c = (c + rowlen - 1) % rowlen;
-    if (pressed & SCE_CTRL_RIGHT) c = (c + 1) % rowlen;
-    if ((pressed & SCE_CTRL_CIRCLE) && tlen > 0) tok[--tlen] = 0;
-    if ((pressed & SCE_CTRL_CROSS) && rows[r][c] && tlen + 1 < sizeof(tok) &&
-        tlen + 1 < out_len)
-      { tok[tlen++] = rows[r][c]; tok[tlen] = 0; }
-    if (pressed & SCE_CTRL_TRIANGLE) {
-      if (!tlen) continue;
-      snprintf(out, out_len, "%s", tok);
-      log_msg("kb done len=%u", tlen);
-      return 0;
+    } else if(choice==8) {
+      char download[1024],tag[64];gui_message("App update","Checking GitHub releases","This can take a few seconds.");
+      int r=update_check(download,sizeof(download),tag,sizeof(tag));
+      if(r<0)snprintf(notice,sizeof(notice),"Update check failed. Try again when connected.");
+      else if(!r)snprintf(notice,sizeof(notice),"This build is current.");
+      else {
+        const char *rows2[]={"Download update VPK","Cancel"};
+        int r2=gui_choice("Update available",tag,rows2,2);if(r2==GUI_QUIT)return r2;
+        if(r2==0){gui_message("App update","Downloading VPK","Install ux0:data/plex-client/update.vpk with VitaShell after exiting.");
+          snprintf(notice,sizeof(notice),"%s",update_download(download,NULL)==0?"Downloaded. Install update.vpk using VitaShell.":"Download failed; no incomplete VPK was retained.");}
+      }
+    } else if(choice==9) {
+      const char *rows2[]={"Back"};
+      if(gui_choice("Plex for Vita " APP_VERSION,"X opens / pauses; O returns / stops. Triangle searches; Square refreshes; L/R changes pages.",rows2,1)==GUI_QUIT)return GUI_QUIT;
     }
   }
 }
-#endif
-
-int main(void) {
-#ifdef __vita__
-  DBG_INIT();
-  sceIoMkdir("ux0:data/plex-client", 0777);
-  logfd = sceIoOpen("ux0:data/plex-client/debug.log",
-    SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC | SCE_O_APPEND, 0777);
-  log_msg("boot v%s", APP_VERSION);
-  sceSysmoduleLoadModule(SCE_SYSMODULE_IME);
-  // Required before any system dialog (keyboard included).
-  sceAppUtilInit(&(SceAppUtilInitParam){}, &(SceAppUtilBootParam){});
-  sceCommonDialogSetConfigParam(&(SceCommonDialogConfigParam){});
-  http_init();
-  ui_theme();
-  ui_font_2x();
-  log_msg("ui font %dx%d", psvDebugScreenGetFont()->width,
-    psvDebugScreenGetFont()->height);
-  gui_fb_early(); // claim poster framebuffer before CDRAM fragments
-
-  settings_t st;
-  settings_load(&st);
-  char url[512], hls[1024];
-  static char body[512 * 1024];
-  plex_pin_t pin = { 0 };
-  browse_item_t items[BROWSE_MAX_ITEMS];
-  int n_items = 0, cursor = 0;
-  screen_t s = st.token[0] ? S_SECTIONS : S_LOGIN;
-  int need_fetch = 1;
-  browse_item_t sections[BROWSE_MAX_ITEMS];
-  int n_sec = 0, sec_idx = 0;
-  int folder_depth = 0;
-  static char folder_keys[16][BROWSE_KEY_LEN];
-  static char folder_titles[16][BROWSE_TITLE_LEN];
-  // Network calls block, so they run as one-shot "pending" actions:
-  // the button press only arms the action, the next frame paints a
-  // "Working..." screen first, and only then does the blocking call
-  // run. The user always sees feedback, never a frozen frame.
-  typedef enum {
-    ACT_NONE, ACT_PIN_CREATE, ACT_PIN_POLL,
-    ACT_FETCH_SEC, ACT_FETCH_ITEMS
-  } act_t;
-  act_t pending = ACT_NONE;
-  static char status[256] = { 0 };
-  // Dirty-flag rendering: the loop polls input every frame but only
-  // repaints when something changed. Repainting every frame with no
-  // vsync tears visibly (flicker on boot and in every menu).
-  int dirty = 1;
-
-  SceCtrlData pad, old = { 0 };
-  memset(&old, 0, sizeof(old));
-
-  // Auto-update check, once per launch. Skipped silently when offline.
-  // Paint first: the check blocks on the network, and with dirty-flag
-  // rendering nothing else would appear until it returns (looks frozen).
-  {
-    char dl[512], tag[32];
-    DBG_CLEAR();
-    ui_bar("Starting");
-    ui_blank();
-    ui_center("Checking for updates...");
-    int up = update_check(dl, sizeof(dl), tag, sizeof(tag));
-    log_msg("update_check=%d tag=%s", up,
-      up > 0 ? tag : "-");
-    if (up > 0) {
-      int choice = -1;
-      // Draw once, then poll without repainting (see dirty flag below).
-      DBG_CLEAR();
-      ui_bar("Update available");
-      ui_center("A newer build is ready:");
-      char line[64];
-      snprintf(line, sizeof(line), "%s  ->  %s", APP_VERSION, tag);
-      ui_center(line);
-      ui_blank();
-      ui_center("[ X ] Download + install      [ O ] Skip");
-      while (choice < 0) {
-        sceCtrlPeekBufferPositive(0, &pad, 1);
-        int pressed = pad.buttons & ~old.buttons;
-        old = pad;
-        if (pressed & SCE_CTRL_CROSS) choice = 1;
-        if (pressed & SCE_CTRL_CIRCLE) choice = 0;
-        sceKernelDelayThread(50000);
-      }
-      if (choice == 1) {
-        DBG_CLEAR();
-        ui_bar("Update available");
-        ui_center("Downloading update...");
-        if (update_download(dl, NULL) == 0) {
-          DBG_CLEAR();
-          ui_bar("Update available");
-          ui_center("Installing - app will exit,");
-          ui_center("relaunch when done.");
-          sceKernelDelayThread(2000000);
-          update_install(); // exits on success
-          DBG_CLEAR();
-          ui_bar("Update available");
-          ui_center("Install failed. Continuing.");
-          sceKernelDelayThread(2000000);
-        } else {
-          DBG_CLEAR();
-          ui_bar("Update available");
-          ui_center("Download failed. Continuing.");
-          sceKernelDelayThread(2000000);
-        }
-      }
-    }
-  }
-
-  for (;;) {
-    sceCtrlPeekBufferPositive(0, &pad, 1);
-    int pressed = pad.buttons & ~old.buttons;
-    old = pad;
-    if (pressed) log_msg("btn 0x%X scr %d pend %d", pressed, (int)s,
-      (int)pending);
-    if (pad.buttons & SCE_CTRL_START) break;
-
-    // ---- input: arm actions, never block here ----
-    if (pending == ACT_NONE) {
-      if ((pressed & SCE_CTRL_UP) && cursor > 0) cursor--;
-      if (pressed & SCE_CTRL_DOWN) cursor++;
-      if (s == S_LOGIN) {
-        if (!pin.pin_id) {
-          if (pressed & SCE_CTRL_CROSS) pending = ACT_PIN_CREATE;
-          if (pressed & SCE_CTRL_TRIANGLE) {
-            char tok[128];
-            if (kb_prompt_token(tok, sizeof(tok)) == 0) {
-              snprintf(st.token, sizeof(st.token), "%s", tok);
-              settings_save(&st);
-              s = S_SECTIONS;
-              need_fetch = 1;
-              cursor = 0;
-              snprintf(status, sizeof(status), "Token saved - loading libraries");
-            } else {
-              snprintf(status, sizeof(status), "Token entry cancelled");
-            }
-          }
-        } else {
-          if (pressed & SCE_CTRL_CROSS) pending = ACT_PIN_POLL;
-          if (pressed & SCE_CTRL_CIRCLE) {
-            memset(&pin, 0, sizeof(pin));
-            status[0] = 0;
-          }
-        }
-      } else if (s == S_SECTIONS) {
-        if ((pressed & SCE_CTRL_CROSS) && n_sec > 0) {
-          if (cursor >= n_sec) cursor = n_sec - 1;
-          sec_idx = cursor;
-          folder_depth = 0;
-          s = S_ITEMS;
-          need_fetch = 1;
-          cursor = 0;
-          status[0] = 0;
-        }
-        if ((pressed & SCE_CTRL_CROSS) && !n_sec) need_fetch = 1;
-        // No logout: login is one-time. A rejected token clears
-        // itself (see ACT_FETCH_SEC) and returns here alone.
-      } else if (s == S_ITEMS) {
-        if ((pressed & SCE_CTRL_CROSS) && !n_items) need_fetch = 1;
-        // The poster grid owns all input while visible (blocking call
-        // in render below): X-play/O-back live there, not here.
-        // O here only fires on the brief "(loading...)" frame.
-        if (pressed & SCE_CTRL_CIRCLE) {
-          if (folder_depth) folder_depth--;
-          else s = S_SECTIONS;
-          need_fetch = 1;
-          status[0] = 0;
-        }
-      } else {
-        if (pressed & SCE_CTRL_CIRCLE) {
-          player_stop();
-          s = S_ITEMS;
-        }
-      }
-    }
-
-    // Any button press may have changed state: schedule one repaint.
-    if (pressed) dirty = 1;
-
-    // ---- pending network action: paint "Working..." first ----
-    if (pending != ACT_NONE) {
-      DBG_CLEAR();
-      ui_bar("Please wait");
-      ui_blank();
-      ui_center("Working...");
-      if (pending == ACT_PIN_CREATE)
-        ui_center("Contacting plex.tv for a link code");
-      else if (pending == ACT_PIN_POLL)
-        ui_center("Checking plex.tv/link approval");
-      else
-        ui_center("Talking to your Plex server");
-      ui_blank();
-      ui_center("This can take up to 10 seconds.");
-
-      switch (pending) {
-      case ACT_PIN_CREATE:
-        plex_pin_create_url(url, sizeof(url));
-        if (http_post_pins(url, st.client_id, body, sizeof(body)) == 0 &&
-            plex_parse_pin_create(body, &pin) == 0) {
-          settings_save(&st);
-          snprintf(status, sizeof(status),
-            "Code ready - enter it at plex.tv/link, then press X");
-        } else {
-          log_msg("pin create fail HTTP %d err 0x%X ssl 0x%X/0x%X",
-            http_last_status(), http_last_error(),
-            http_last_ssl_err(), http_last_ssl_detail());
-          snprintf(status, sizeof(status),
-            "plex.tv fail HTTP %d err 0x%X ssl 0x%X/0x%X - tell me all 4",
-            http_last_status(), http_last_error(),
-            http_last_ssl_err(), http_last_ssl_detail());
-        }
-        break;
-      case ACT_PIN_POLL:
-        plex_pin_poll_url(pin.pin_id, url, sizeof(url));
-        if (http_get(url, st.client_id, "application/json",
-              body, sizeof(body)) == 0 &&
-            plex_parse_auth_token(body, st.token, sizeof(st.token)) == 0) {
-          settings_save(&st);
-          s = S_SECTIONS;
-          need_fetch = 1;
-          cursor = 0;
-          snprintf(status, sizeof(status), "Signed in!");
-        } else {
-          snprintf(status, sizeof(status),
-            "Not approved yet (HTTP %d err 0x%X) - code at plex.tv/link, X",
-            http_last_status(), http_last_error());
-        }
-        break;
-      case ACT_FETCH_SEC:
-        n_sec = 0;
-        plex_build_sections_url(st.server, st.token, url, sizeof(url));
-        if (http_get(url, st.client_id, "text/xml", body, sizeof(body)) == 0) {
-          n_sec = plex_parse_items(body, "Directory", sections, 64);
-          if (!n_sec)
-            snprintf(status, sizeof(status), "Signed in, but no libraries found");
-          else
-            status[0] = 0;
-        } else if (http_last_status() == 401) {
-          // Token rejected: drop it and show the one-time login.
-          st.token[0] = 0;
-          settings_save(&st);
-          memset(&pin, 0, sizeof(pin));
-          s = S_LOGIN;
-          snprintf(status, sizeof(status), "Token rejected - sign in again");
-        } else {
-          snprintf(status, sizeof(status),
-            "Server unreachable (%.60s) - START quits",
-            st.server);
-        }
-        need_fetch = 0;
-        cursor = 0;
-        break;
-      case ACT_FETCH_ITEMS:
-        n_items = 0;
-        plex_build_items_url(st.server, st.token,
-          sections[sec_idx].key, url, sizeof(url));
-        if (folder_depth)
-          snprintf(url, sizeof(url), "%s%s?X-Plex-Token=%s",
-            st.server, folder_keys[folder_depth - 1], st.token);
-        if (http_get(url, st.client_id, "text/xml",
-              body, sizeof(body)) == 0) {
-          n_items = plex_parse_items(body, NULL, items, BROWSE_MAX_ITEMS);
-          if (!n_items)
-            snprintf(status, sizeof(status), "This library is empty");
-          else
-            status[0] = 0;
-        } else if (http_last_status() == 401) {
-          st.token[0] = 0;
-          settings_save(&st);
-          memset(&pin, 0, sizeof(pin));
-          s = S_LOGIN;
-          snprintf(status, sizeof(status), "Token rejected - sign in again");
-        } else {
-          snprintf(status, sizeof(status), "Library fetch failed (HTTP %d)",
-            http_last_status());
-        }
-        need_fetch = 0;
-        cursor = 0;
-        break;
-      default:
-        break;
-      }
-      pending = ACT_NONE;
-      dirty = 1; // result changed status/screen: repaint once
-      sceKernelDelayThread(33000);
-      continue;
-    }
-
-    // ---- render (only when dirty) ----
-    if (!dirty) {
-      sceKernelDelayThread(33000);
-      continue;
-    }
-    dirty = 0;
-    DBG_CLEAR();
-    if (s == S_LOGIN) {
-      ui_bar("Sign in");
-      ui_center("P L E X");
-      ui_blank();
-      if (!pin.pin_id) {
-        ui_center("Link this Vita to your Plex account:");
-        ui_blank();
-        ui_center("1.  Press X to get a 4-letter link code");
-        ui_center("2.  On another device, go to plex.tv/link");
-        ui_center("3.  Enter the code, come back, press X");
-        ui_blank();
-        ui_center("[ X ]  Get link code");
-        ui_blank();
-        ui_center("No code? PC: app.plex.tv, F12 Console, type");
-        ui_center("localStorage.myPlexAccessToken, then:");
-        ui_blank();
-        ui_center("[ /\\ ]  Enter token manually");
-      } else {
-        ui_center("On another device, go to plex.tv/link");
-        ui_center("and enter this code:");
-        ui_blank();
-        char code[64];
-        snprintf(code, sizeof(code), "  %s  ", pin.code);
-        DBG_PRINT(C_ORANGE_FG);
-        ui_center(code);
-        DBG_PRINT(C_FG);
-        ui_blank();
-        ui_center("[ X ]  I entered the code      [ O ]  New code");
-      }
-      ui_status(status);
-      char ver[64];
-      snprintf(ver, sizeof(ver), "v%s   START quits", APP_VERSION);
-      ui_footer(ver);
-    } else if (s == S_SECTIONS) {
-      if (need_fetch) pending = ACT_FETCH_SEC;
-      ui_bar("Libraries");
-      ui_blank();
-      if (cursor >= n_sec && n_sec > 0) cursor = n_sec - 1;
-      for (int i = (cursor / 20) * 20; i < n_sec && i < (cursor / 20 + 1) * 20; i++)
-        ui_row(i == cursor, sections[i].title);
-      if (!n_sec) ui_center(need_fetch ? "(loading...)" : "No libraries available");
-      ui_status(status);
-      ui_footer("Up/Down move   X open   START quits");
-    } else if (s == S_ITEMS) {
-      if (need_fetch) {
-        pending = ACT_FETCH_ITEMS;
-      } else if (n_items > 0) {
-        // Poster grid owns the screen until back/quit/play.
-        int sel = gui_browse(folder_depth ? folder_titles[folder_depth - 1] :
-          sections[sec_idx].title, items, n_items,
-          st.server, st.token, status);
-        DBG_INIT(); // restore the text framebuffer on every grid exit
-        sceCtrlPeekBufferPositive(0, &old, 1);
-        if (sel == -2) break; // START: quit the app
-        if (sel >= 0 && items[sel].is_directory) {
-          if (folder_depth < 16) {
-            snprintf(folder_keys[folder_depth], BROWSE_KEY_LEN, "%s", items[sel].key);
-            snprintf(folder_titles[folder_depth], BROWSE_TITLE_LEN, "%s", items[sel].title);
-            folder_depth++;
-            need_fetch = 1;
-            status[0] = 0;
-          } else {
-            snprintf(status, sizeof(status), "Folder depth limit reached");
-          }
-        } else if (sel >= 0) {
-          plex_build_vita_transcode_url(st.server, st.token,
-            items[sel].key, hls, sizeof(hls));
-          int prc = player_play_hls(hls);
-          if (prc >= 0) prc = player_run_blocking();
-          if (prc < 0)
-            snprintf(status, sizeof(status),
-              "Play failed rc=%d - see debug.log, O back", prc);
-          else
-            status[0] = 0;
-        } else {
-          if (folder_depth) folder_depth--;
-          else s = S_SECTIONS;
-          need_fetch = 1;
-          status[0] = 0; // -1 is O/back only: alloc cannot fail anymore
-        }
-        ui_theme(); // grid + player used their own framebuffer
-        ui_font_2x();
-        dirty = 1;
-        sceKernelDelayThread(33000);
-        continue;
-      }
-      DBG_CLEAR();
-      ui_bar(folder_depth ? folder_titles[folder_depth - 1] : sections[sec_idx].title);
-      ui_blank();
-      if (!n_items) ui_center(need_fetch ? "(loading...)" : "No items available");
-      ui_status(status);
-      ui_footer("Up/Down move   X play   O back   START quits");
+static int login(settings_t *st) {
+  plex_pin_t pin={0};
+  for(;;) {
+    const char *rows[]={pin.pin_id?"Check link approval":"Get Plex link code","Enter Plex token manually","Settings"};
+    char subtitle[256];
+    if(pin.pin_id)snprintf(subtitle,sizeof(subtitle),"Visit plex.tv/link and enter %s, then check approval.",pin.code);
+    else snprintf(subtitle,sizeof(subtitle),"%s",notice[0]?notice:"Link your account once to browse your Plex libraries.");
+    int r=gui_choice("Sign in to Plex",subtitle,rows,3);
+    if(r==GUI_QUIT || r==GUI_BACK)return GUI_QUIT;
+    if(r==2){if(settings_screen(st,NULL)==GUI_QUIT)return GUI_QUIT;if(st->token[0])return 0;continue;}
+    if(r==1) {
+      char token[128]={0};int k=gui_keyboard("Enter Plex token",token,sizeof(token),1);
+      if(k==GUI_QUIT)return k;
+      if(k==0 && token[0]){snprintf(st->token,sizeof(st->token),"%s",token);snprintf(st->account_token,sizeof(st->account_token),"%s",token);save(st);return 0;}
+    } else if(!pin.pin_id) {
+      plex_pin_create_url(url,sizeof(url));gui_message("Plex sign in","Requesting a link code","If plex.tv is unavailable, you can enter a token manually.");
+      if(http_post_pins(url,st->client_id,body,sizeof(body)) || plex_parse_pin_create(body,&pin))
+        snprintf(notice,sizeof(notice),"Link request failed (HTTP %d). Try manual token entry.",http_last_status());
     } else {
-      ui_bar("Now playing");
-      ui_blank();
-      ui_center(hls);
-      ui_status(status);
-      ui_footer("O stop/back   START quits");
+      plex_pin_poll_url(pin.pin_id,url,sizeof(url));gui_message("Plex sign in","Checking approval","Your account token will be saved on this Vita.");
+      if(!request(st,url,"application/json") && !plex_parse_auth_token(body,st->token,sizeof(st->token))) {
+        snprintf(st->account_token,sizeof(st->account_token),"%s",st->token);save(st);notice[0]=0;return 0;
+      }
+      if(http_last_status()==404 || http_last_status()==410)memset(&pin,0,sizeof(pin));
+      snprintf(notice,sizeof(notice),"Not approved yet. Enter the code at plex.tv/link.");
     }
-    sceKernelDelayThread(33000);
   }
-  player_stop();
-  sceKernelExitProcess(0);
-  return 0;
+}
+static int play(settings_t *st,browse_item_t *it) {
+  char key[384];snprintf(key,sizeof(key),"%s",it->key);
+  if(it->rating_key[0])snprintf(key,sizeof(key),"/library/metadata/%s",it->rating_key);
+  if(strcmp(it->type,"movie") && strcmp(it->type,"episode") && strcmp(it->type,"clip")) {
+    const char *rows[]={"Back"};
+    return gui_choice("Unsupported media","This player supports video. Music and photo libraries remain browsable.",rows,1)==GUI_QUIT?1:0;
+  }
+  gui_message("Video details","Loading description","Preparing movie or episode information.");
+  if(!plex_build_page_url(st->server,st->token,key,"","",0,1,url,sizeof(url)) && !request(st,url,"text/xml")) {
+    static browse_item_t details;
+    if(plex_parse_items(body,"Video",&details,1)==1)*it=details;
+  }
+  browse_item_t shown=*it;
+  if(!st->resume)shown.view_offset=0;
+  int choice=gui_details(&shown,st->server,st->token,notice);
+  if(choice==GUI_QUIT)return 1;if(choice<0)return 0;
+  unsigned offset=choice==1?it->view_offset:0;
+  char session[80],source[4096],next[4096];
+  snprintf(session,sizeof(session),"%s-%u",st->client_id,sceKernelGetProcessTimeLow());
+  if(plex_build_playback_url(st,key,session,offset,source,sizeof(source))<0) {
+    snprintf(notice,sizeof(notice),"Playback URL could not be built.");return 0;
+  }
+  gui_message(it->title,"Starting video","Preparing a Vita-compatible H.264 / AAC stream. O cancels during buffering.");
+  // Validate the playlist before invoking the decoder; resolve a master playlist
+  // to its media playlist and retain authentication on relative variant URLs.
+  int valid=0;
+  for(int depth=0;depth<4;depth++) {
+    if(request(st,source,"application/vnd.apple.mpegurl"))break;
+    int r=plex_hls_media_url(source,body,st->token,next,sizeof(next));
+    if(r<0){snprintf(notice,sizeof(notice),"Plex did not return a playable HLS stream. Check server transcoding.");break;}
+    if(r==0){valid=1;break;}
+    snprintf(source,sizeof(source),"%s",next);
+  }
+  int result=0;
+  if(valid) {
+    int r=player_play_hls(source);if(r>=0)r=player_run(it->title,it->duration,offset);
+    unsigned position=player_position();
+    if(position && it->rating_key[0]) {
+      char tok[384];plex_url_encode(st->token,tok,sizeof(tok));
+      snprintf(url,sizeof(url),"%s/:/timeline?ratingKey=%s&key=%s&state=stopped&time=%u&duration=%u&X-Plex-Token=%s",
+        st->server,it->rating_key,key,position,it->duration,tok);
+      gui_message(it->title,"Returning to your library","Saving playback position.");
+      http_get(url,st->client_id,"text/xml",body,sizeof(body));it->view_offset=position;
+    }
+    if(r==1)result=1;
+    if(r<0)snprintf(notice,sizeof(notice),"Video could not start (0x%X). Check server transcoding and debug.log.",r);
+    else notice[0]=0;
+  }
+  char tok[384],sid[240];plex_url_encode(st->token,tok,sizeof(tok));plex_url_encode(session,sid,sizeof(sid));
+  snprintf(url,sizeof(url),"%s/video/:/transcode/universal/stop?session=%s&X-Plex-Token=%s",st->server,sid,tok);
+  http_get(url,st->client_id,"text/xml",body,sizeof(body));
+  return result;
+}
+int main(void) {
+  sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG);
+  psvDebugScreenInit();sceIoMkdir("ux0:data/plex-client",0777);
+  SceUID log=sceIoOpen("ux0:data/plex-client/debug.log",SCE_O_WRONLY|SCE_O_CREAT|SCE_O_TRUNC,0777);
+  if(log>=0){sceIoWrite(log,"Plex Vita " APP_VERSION "\n",sizeof("Plex Vita " APP_VERSION "\n")-1);sceIoClose(log);}
+  if(gui_init()<0){psvDebugScreenPrintf("Cannot load Plex interface. Reinstall the complete VPK.\n");sceKernelDelayThread(4000000);sceKernelExitProcess(1);return 1;}
+  gui_message("Plex for Vita","Connecting","Loading your account and saved server settings.");
+  settings_t st;settings_load(&st);save(&st);
+  int net=http_init();if(net<0)snprintf(notice,sizeof(notice),"Network setup failed (0x%X). Reconnect Wi-Fi and restart.",net);
+  int depth=0,count=0,total=0,fetch=1;
+  snprintf(locations[0].title,sizeof(locations[0].title),"Your libraries");
+  snprintf(locations[0].path,sizeof(locations[0].path),"/library/sections");
+  for(;;) {
+    if(!st.token[0]){if(login(&st)==GUI_QUIT)break;depth=0;fetch=1;}
+    location_t *loc=locations+depth;
+    if(fetch) {
+      gui_message(loc->title,loc->search[0]?"Searching Plex":"Loading library",loc->search[0]?loc->search:st.server);
+      count=total=0;
+      if(plex_build_page_url(st.server,st.token,loc->path,loc->search,
+        depth && !strstr(loc->path,"/children")?sorts[st.sort]:"",loc->offset,BROWSE_MAX_ITEMS,url,sizeof(url))==0 && !request(&st,url,"text/xml")) {
+        browse_page_t page={0};
+        if(plex_parse_page(body,&page)<0)snprintf(notice,sizeof(notice),"Unexpected server response. Check server address in Settings.");
+        else {
+          count=plex_parse_items(body,depth?NULL:"Directory",items,BROWSE_MAX_ITEMS);total=page.total;
+          if(loc->offset && page.offset!=loc->offset){count=0;snprintf(notice,sizeof(notice),"Server did not return the requested page. Square retries.");}
+          else if(total<loc->offset+count)total=loc->offset+count;
+          else notice[0]=0;
+        }
+      }
+      if(!count && !notice[0])snprintf(notice,sizeof(notice),"%s",loc->search[0]?"No matches. Triangle changes your search.":"No items. Square refreshes; SELECT opens Settings.");
+      fetch=0;
+    }
+    char subtitle[240];snprintf(subtitle,sizeof(subtitle),"%s%s%s",depth?sort_names[st.sort]:"Choose a library to explore",loc->search[0]?"  |  Search: ":"",loc->search);
+    gui_view_t view={.title=loc->title,.subtitle=subtitle,.notice=notice,.server=st.server,.token=st.token,
+      .items=items,.n=count,.libraries=depth==0,.offset=loc->offset,.total=total,.cursor=loc->cursor};
+    int action=gui_browse_view(&view);loc->cursor=view.cursor;
+    if(action==GUI_QUIT)break;
+    if(action==GUI_HOME){depth=0;locations[0].offset=locations[0].cursor=0;fetch=1;}
+    else if(action==GUI_BACK){if(depth){depth--;fetch=1;}else {int r=settings_screen(&st,NULL);if(r==GUI_QUIT)break;fetch=1;}}
+    else if(action==GUI_SETTINGS){int r=settings_screen(&st,loc->section);if(r==GUI_QUIT)break;if(r==GUI_HOME)depth=0;fetch=1;}
+    else if(action==GUI_REFRESH){notice[0]=0;fetch=1;}
+    else if(action==GUI_NEXT){loc->offset+=BROWSE_MAX_ITEMS;loc->cursor=0;fetch=1;}
+    else if(action==GUI_PREVIOUS){loc->offset=loc->offset>BROWSE_MAX_ITEMS?loc->offset-BROWSE_MAX_ITEMS:0;loc->cursor=0;fetch=1;}
+    else if(action==GUI_SEARCH) {
+      char query[128];snprintf(query,sizeof(query),"%s",loc->search);
+      int k=gui_keyboard("Search movies and series",query,sizeof(query),0);if(k==GUI_QUIT)break;
+      if(k==0 && depth<31) {
+        location_t *next=locations+depth+1;memset(next,0,sizeof(*next));
+        snprintf(next->title,sizeof(next->title),"Search results");snprintf(next->search,sizeof(next->search),"%s",query);
+        snprintf(next->section,sizeof(next->section),"%s",loc->section);
+        if(loc->section[0])snprintf(next->path,sizeof(next->path),"/library/sections/%s/all",loc->section);
+        else snprintf(next->path,sizeof(next->path),"/library/all");
+        depth++;fetch=1;
+      }
+    } else if(action>=0 && action<count) {
+      browse_item_t *it=items+action;
+      if(depth==0 || it->is_directory) {
+        if(depth>=31){snprintf(notice,sizeof(notice),"Maximum folder depth reached.");continue;}
+        location_t *next=locations+depth+1;memset(next,0,sizeof(*next));snprintf(next->title,sizeof(next->title),"%s",it->title);
+        snprintf(next->section,sizeof(next->section),"%s",depth?loc->section:it->key);
+        if(depth==0)snprintf(next->path,sizeof(next->path),"/library/sections/%s/all",it->key);
+        else {
+          snprintf(next->path,sizeof(next->path),"%s",it->key);
+          if(!strstr(next->path,"/children") && !strstr(next->path,"/allLeaves") && !strncmp(it->key,"/library/metadata/",18))
+            snprintf(next->path,sizeof(next->path),"%s/children",it->key);
+        }
+        depth++;fetch=1;
+      } else if(play(&st,it))break;
+    }
+  }
+  player_stop();gui_shutdown();sceKernelExitProcess(0);return 0;
+}
 #else
-  return host_demo();
-#endif
-}
-
-#ifndef __vita__
-// Host self-test: auth + browse + Vita transcode URL.
-#include <assert.h>
-static int host_demo(void) {
-  plex_pin_t pin;
-  assert(plex_parse_pin_create(
-    "{\"id\":123456,\"code\":\"ABCD-1234\"}", &pin) == 0);
-  char tok[128];
-  assert(plex_parse_auth_token(
-    "{\"authToken\":\"tok123\"}", tok, sizeof(tok)) == 0);
-
-  const char *xml =
-    "<MediaContainer>"
-    "<Directory title=\"Movies\" key=\"1\"/>"
-    "<Directory title=\"TV\" key=\"2\"/>"
-    "</MediaContainer>";
-  browse_item_t it[8];
-  int n = plex_parse_items(xml, "Directory", it, 8);
-  assert(n == 2);
-
-  const char *vxml = "<Video title=\"Ep1\" key=\"/library/metadata/99\"/>";
-  n = plex_parse_items(vxml, "Video", it, 8);
-  assert(n == 1);
-
-  char url[1024];
-  plex_build_vita_transcode_url(
-    "http://192.168.1.10:32400", tok, it[0].key, url, sizeof(url));
-  assert(strstr(url, "960x544") && strstr(url, "tok123"));
-
-  char iu[512];
-  plex_build_items_url("http://s:32400", tok, "1", iu, sizeof(iu));
-  assert(strstr(iu, "/library/sections/1/all"));
-
-  printf("host self-test OK: pin=%s items=%d\n", pin.code, n);
-  return 0;
-}
+int main(void){puts("Use tools/run-regression-tests.ps1 for desktop tests.");return 0;}
 #endif

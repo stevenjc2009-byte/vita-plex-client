@@ -21,6 +21,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <malloc.h>
+#include "gui.h"
 
 // Own append-log (main.c owns debug.log truncated at boot; we append).
 static SceUID p_log = -1;
@@ -52,6 +54,35 @@ static volatile int stop_flag = 0;
 static volatile int audio_port = -1;
 static SceUID audio_tid = -1;
 static int av_loaded;
+static unsigned final_position;
+static volatile int paused;
+static volatile int audio_error;
+
+static void *player_alloc(void *arg,uint32_t alignment,uint32_t size) {
+  (void)arg;
+  if(alignment<sizeof(void*))alignment=sizeof(void*);
+  if(!size || (alignment&(alignment-1)))return NULL;
+  return memalign(alignment,size);
+}
+static void player_free(void *arg,void *ptr){(void)arg;free(ptr);}
+static void *frame_alloc(void *arg,uint32_t alignment,uint32_t size) {
+  (void)arg;
+  if(alignment<0x40000)alignment=0x40000;
+  if(!size || (alignment&(alignment-1)) || size>0xFFFFFFFFu-(alignment-1))return NULL;
+  SceKernelAllocMemBlockOpt opt={0};opt.size=sizeof(opt);opt.attr=4;opt.alignment=alignment;
+  SceUID id=sceKernelAllocMemBlock("plex_decode",SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
+    (size+alignment-1)&~(alignment-1),&opt);
+  void *ptr=NULL;
+  if(id>=0 && sceKernelGetMemBlockBase(id,&ptr)<0){sceKernelFreeMemBlock(id);return NULL;}
+  return ptr;
+}
+static void frame_free(void *arg,void *ptr) {
+  (void)arg;
+  if(ptr){SceUID id=sceKernelFindMemBlockByAddr(ptr,0);if(id>=0)sceKernelFreeMemBlock(id);}
+}
+static void player_event(void *arg,int32_t event,int32_t source,void *data) {
+  (void)arg;(void)source;(void)data;plog("player event 0x%X",event);
+}
 
 // 960x544x32bpp scanout buffer. Must be CDRAM (physically contiguous):
 // malloc'd heap is not scanout-capable and shows white (gui v01.24).
@@ -69,8 +100,12 @@ static int clamp8(int v) {
 // nearest-neighbor scaled and centered on the 960x544 screen.
 static void blit_yvu420(const unsigned char *p, unsigned w, unsigned h) {
   if (!p || !w || !h || (w & 1) || (h & 1)) return;
-  unsigned out_w = w > FB_W ? FB_W : w;
-  unsigned out_h = h > FB_H ? FB_H : h;
+  // Scale with a single factor; independently clamping width and height
+  // stretched widescreen movies and portrait video.
+  unsigned out_w=FB_W,out_h=(unsigned)((uint64_t)h*FB_W/w);
+  if(out_h>FB_H){out_h=FB_H;out_w=(unsigned)((uint64_t)w*FB_H/h);}
+  out_w&=~1u;out_h&=~1u;if(!out_w || !out_h)return;
+  memset(framebuf,0,FB_W*FB_H*sizeof(*framebuf));
   unsigned off_x = (FB_W - out_w) / 2;
   unsigned off_y = (FB_H - out_h) / 2;
 
@@ -120,7 +155,7 @@ static void present(void) {
 // Audio pump: AvPlayer hands us S16 PCM chunks; SceAudioOut wants
 // fixed-size outputs, so accumulate into port-sized blocks.
 #define PORT_SAMPLES 1024
-#define ACC_SAMPLES (PORT_SAMPLES * 4)
+#define ACC_SAMPLES PORT_SAMPLES
 
 static int audio_thread(SceSize argc, void *argv) {
   (void)argc; (void)argv;
@@ -128,8 +163,9 @@ static int audio_thread(SceSize argc, void *argv) {
   unsigned acc_frames = 0; // frames = samples per channel
   int channels = 2;
 
-  while (!stop_flag && handle >= 0 &&
-      sceAvPlayerIsActive(handle) == SCE_TRUE) {
+  int rate=0,port_channels=0;
+  while (!stop_flag && handle >= 0) {
+    if(paused){sceKernelDelayThread(5000);continue;}
     SceAvPlayerFrameInfo fr;
     memset(&fr, 0, sizeof(fr));
     if (!sceAvPlayerGetAudioData(handle, &fr) || !fr.pData) {
@@ -137,15 +173,17 @@ static int audio_thread(SceSize argc, void *argv) {
       continue;
     }
     channels = (int)fr.details.audio.channelCount;
-    if (channels < 1) channels = 1;
-    if (channels > 2) channels = 2;
+    if (channels < 1 || channels > 2) { plog("unsupported audio channels=%d",channels);audio_error=-6;return -6; }
 
-    if (audio_port < 0) {
+    if (audio_port < 0 || channels!=port_channels || (int)fr.details.audio.sampleRate!=rate) {
+      if(audio_port>=0){sceAudioOutReleasePort(audio_port);audio_port=-1;}
+      acc_frames=0;port_channels=channels;rate=(int)fr.details.audio.sampleRate;
       int mode = channels == 2 ?
         SCE_AUDIO_OUT_MODE_STEREO : SCE_AUDIO_OUT_MODE_MONO;
-      audio_port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_MAIN,
+      // MAIN accepts only 48 kHz; BGM also accepts 44.1 kHz AAC output.
+      audio_port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_BGM,
         PORT_SAMPLES, (int)fr.details.audio.sampleRate, mode);
-      if (audio_port < 0) return audio_port;
+      if (audio_port < 0) {audio_error=audio_port;return audio_port;}
     }
 
     unsigned bytes = fr.details.audio.size;
@@ -162,7 +200,8 @@ static int audio_thread(SceSize argc, void *argv) {
       if (acc_frames == ACC_SAMPLES) {
         short *o = acc;
         for (unsigned i = 0; i < ACC_SAMPLES / PORT_SAMPLES; i++) {
-          sceAudioOutOutput(audio_port, o);
+          int rc=sceAudioOutOutput(audio_port, o);
+          if(rc<0){audio_error=rc;return rc;}
           o += PORT_SAMPLES * channels;
           if (stop_flag) break;
         }
@@ -184,7 +223,15 @@ int player_play_hls(const char *hls_url) {
 
   SceAvPlayerInitData init;
   memset(&init, 0, sizeof(init));
-  init.autoStart = SCE_FALSE;
+  init.memoryReplacement.allocate=player_alloc;
+  init.memoryReplacement.deallocate=player_free;
+  init.memoryReplacement.allocateTexture=frame_alloc;
+  init.memoryReplacement.deallocateTexture=frame_free;
+  init.eventReplacement.eventCallback=player_event;
+  init.basePriority=125;
+  init.numOutputVideoFrameBuffers=3;
+  init.defaultLanguage="eng";
+  init.autoStart = SCE_TRUE; // start when ready, rather than racing AddSource
   init.debugLevel = 0;
 
   handle = sceAvPlayerInit(&init);
@@ -194,10 +241,8 @@ int player_play_hls(const char *hls_url) {
   plog("play addsrc r=0x%X", r); // URLs contain the private Plex token
   if (r < 0) { player_stop(); return r; }
 
-  r = sceAvPlayerStart(handle);
-  plog("play start r=0x%X", r);
-  if (r < 0) player_stop();
-  return r;
+  paused=0;final_position=0;audio_error=0;
+  return 0;
 }
 
 int player_active(void) {
@@ -207,8 +252,8 @@ int player_active(void) {
 
 // Returns 0 after normal playback, <0 when nothing ever played:
 // -1 no handle, -2 framebuffer alloc fail, -3 stream never went
-// active within 15s (bad URL / server refused), -4 X cancelled wait.
-int player_run_blocking(void) {
+// active within 45s (bad URL / server refused), -4 user cancelled wait.
+int player_run(const char *title,unsigned duration,unsigned base_offset) {
   if (handle < 0) return -1;
   stop_flag = 0;
   fb_block = sceKernelAllocMemBlock("plex_video",
@@ -231,14 +276,14 @@ int player_run_blocking(void) {
 
   // HLS needs seconds to buffer: the old code checked IsActive once
   // and instantly bailed when the stream wasn't up yet, so X looked
-  // dead. Wait up to 15s for active (X cancels), then pump.
+  // dead. Wait up to 45s for active (O cancels), then pump.
   int waited = 0, cancelled = 0;
   while (!stop_flag && sceAvPlayerIsActive(handle) != SCE_TRUE &&
-      waited < 150) {
+      waited < 450) {
     sceCtrlPeekBufferPositive(0, &pad, 1);
     unsigned pressed = pad.buttons & ~old.buttons;
     old = pad;
-    if (pressed & SCE_CTRL_CROSS) { cancelled = 1; break; }
+    if (pressed & (SCE_CTRL_CIRCLE|SCE_CTRL_START)) { cancelled = 1; break; }
     sceKernelDelayThread(100000);
     waited++;
   }
@@ -264,27 +309,53 @@ int player_run_blocking(void) {
   }
 
   int frames = 0;
-  while (!stop_flag && sceAvPlayerIsActive(handle) == SCE_TRUE) {
+  int quit=0,show_controls=180;
+  unsigned no_frames=0;
+  while (!stop_flag && (paused || sceAvPlayerIsActive(handle) == SCE_TRUE)) {
+    if(audio_error){plog("audio output FAIL 0x%X",audio_error);break;}
     if (sceAvPlayerGetVideoData(handle, &vf) && vf.pData) {
       if (!frames)
         plog("play first frame %ux%u", vf.details.video.width,
           vf.details.video.height);
       frames++;
+      no_frames=0;
       blit_yvu420(vf.pData, vf.details.video.width,
         vf.details.video.height);
-      present();
     }
+    else if(!paused)no_frames++;
+    final_position=base_offset+(unsigned)sceAvPlayerCurrentTime(handle);
+    if(show_controls>0){gui_player_overlay(framebuf,title,final_position,duration,paused,NULL);if(!paused)show_controls--;}
+    present();
     sceCtrlPeekBufferPositive(0, &pad, 1);
     unsigned pressed = pad.buttons & ~old.buttons;
     old = pad;
-    if (pressed & SCE_CTRL_CROSS) break;
+    if (pressed & SCE_CTRL_START) {quit=1;break;}
+    if (pressed & SCE_CTRL_CIRCLE) break;
+    if (pressed & SCE_CTRL_CROSS) {
+      int rc=paused?sceAvPlayerResume(handle):sceAvPlayerPause(handle);
+      if(rc>=0)paused=!paused;
+      else plog("pause/resume FAIL 0x%X",rc);
+      show_controls=180;
+    }
+    if(pressed & SCE_CTRL_TRIANGLE)show_controls=show_controls?0:180;
+    if(pressed & (SCE_CTRL_LEFT|SCE_CTRL_RIGHT)) {
+      uint64_t at=sceAvPlayerCurrentTime(handle);
+      uint64_t target=(pressed&SCE_CTRL_LEFT)?at>10000?at-10000:0:at+10000;
+      if(duration && target+base_offset>duration)target=duration>base_offset?duration-base_offset:0;
+      int rc=sceAvPlayerJumpToTime(handle,target);if(rc<0)plog("seek FAIL 0x%X",rc);
+      show_controls=180;
+    }
+    // A stream that never produces video must not be reported as success.
+    if(!frames && no_frames>1800){plog("active without video");break;}
     sceDisplayWaitVblankStart();
   }
   plog("play end frames=%d", frames);
 
   player_stop();
-  return 0;
+  return audio_error?audio_error:quit?1:frames?0:-5;
 }
+int player_run_blocking(void){return player_run("Now playing",0,0);}
+unsigned player_position(void){return final_position;}
 
 void player_stop(void) {
   stop_flag = 1;
@@ -319,6 +390,8 @@ int player_play_hls(const char *hls_url) {
 }
 int player_active(void) { return 0; }
 int player_run_blocking(void) { return -1; }
+int player_run(const char *title,unsigned duration,unsigned offset){(void)title;(void)duration;(void)offset;return -1;}
+unsigned player_position(void){return 0;}
 void player_stop(void) {}
 
 #endif

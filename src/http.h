@@ -10,6 +10,7 @@ int http_get(const char *url, const char *client_id, const char *accept,
 // progress_cb(received, total_or_0) may be NULL. 0 = ok.
 int http_download(const char *url, const char *path,
   void (*progress_cb)(unsigned received, unsigned total));
+int http_download_art(const char *url, const char *path, volatile int *cancel);
 // Last HTTP status seen by run() (0 = none yet). For UI diagnostics.
 int http_last_status(void);
 // Last SceHttp error from run() (0 = none). For UI diagnostics.

@@ -4,7 +4,7 @@ project(vita-plex-client C)
 # Windows: cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/Users/steve/vita-dev/vitasdk/vitasdk/share/vita.toolchain.cmake -B build
 set(VITA_TITLEID "PLEX00001")
 set(VITA_TITLE "Plex Client")
-set(VITA_VERSION "01.31")
+set(VITA_VERSION "01.32")
 
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
@@ -56,4 +56,8 @@ vita_create_vpk(vita-plex-client-${VITA_VERSION}.vpk ${VITA_TITLEID} ${PROJECT_N
   FILE ${CMAKE_SOURCE_DIR}/sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png
   FILE ${CMAKE_SOURCE_DIR}/sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png
   FILE ${CMAKE_SOURCE_DIR}/sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml
+  FILE ${CMAKE_SOURCE_DIR}/assets/font16.bin assets/font16.bin
+  FILE ${CMAKE_SOURCE_DIR}/assets/font20.bin assets/font20.bin
+  FILE ${CMAKE_SOURCE_DIR}/assets/font28.bin assets/font28.bin
+  FILE ${CMAKE_SOURCE_DIR}/assets/FONT-LICENSE.txt assets/FONT-LICENSE.txt
 )
