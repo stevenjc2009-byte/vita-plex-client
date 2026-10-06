@@ -41,9 +41,9 @@ static int save(settings_t *st) {
 static int request(settings_t *st,const char *target,const char *accept) {
   if(network_get(target,st->client_id,accept,body,sizeof(body),15)==0)return 0;
   if(network_cancelled()){snprintf(notice,sizeof(notice),"Request cancelled.");return -1;}
-  int status=http_last_status();
+  int status=network_last_status();
   if(status==401 || status==403)snprintf(notice,sizeof(notice),"Server denied access (%d). Check the token and server in Settings.",status);
-  else snprintf(notice,sizeof(notice),"Server request failed (HTTP %d, error 0x%X). Square retries; SELECT opens Settings.",status,http_last_error());
+  else snprintf(notice,sizeof(notice),"Connection failed at %s (HTTP %d / 0x%X). Settings: check server and Wi-Fi.",network_last_stage(),status,network_last_error());
   return -1;
 }
 static int discover(settings_t *st) {
@@ -78,6 +78,7 @@ static int discover(settings_t *st) {
 static int settings_screen(settings_t *st,const char *section) {
   int cursor=0;
   for(;;) {
+    if(network_exit_requested())return GUI_QUIT;
     char server[320],quality[100],resume[80],sorting[80],clocks[80],autoplay[80],subtitles[80];
     snprintf(server,sizeof(server),"Server: %s",st->server);
     snprintf(quality,sizeof(quality),"Video quality: %d Mbps (H.264 / AAC)",st->bitrate/1000);
@@ -132,9 +133,14 @@ static int settings_screen(settings_t *st,const char *section) {
       char wifi[100];snprintf(wifi,sizeof(wifi),"Wi-Fi: %s (state %d / error %X)",wifi_result<0?"unavailable":wifi_state==SCE_NETCTL_STATE_CONNECTED?"connected":"disconnected / connecting",wifi_state,wifi_result);
       char diag[320],perf[200];performance_describe(perf,sizeof(perf));
       gui_message("Connection diagnostics","Checking Plex server","O cancels.");plex_build_page_url(st->server,st->token,"/identity","","",0,1,url,sizeof(url));
-      int r=request(st,url,"text/xml");snprintf(diag,sizeof(diag),"%s | HTTP %d | Error %X | TLS %X / %X | Pending progress %d",r?"Server failed":"Server reachable",http_last_status(),http_last_error(),http_last_ssl_err(),http_last_ssl_detail(),progress_pending());
+      int r=request(st,url,"text/xml");snprintf(diag,sizeof(diag),"%s | HTTP %d | Error %X | TLS %X / %X | Pending progress %d",r?"Server failed":"Server reachable",network_last_status(),network_last_error(),http_last_ssl_err(),http_last_ssl_detail(),progress_pending());
       const char *rows2[]={wifi,perf,diag,"Decoder errors: ux0:data/plex-client/debug.log","Back"};if(gui_choice("Diagnostics","Clock values are read back from the system / plugin",rows2,5)==GUI_QUIT)return GUI_QUIT;
-    } else if(choice==14){if(progress_retry(st))snprintf(notice,sizeof(notice),"Some progress remains pending. Reconnect and retry.");else snprintf(notice,sizeof(notice),"Playback recovery complete.");}
+    } else if(choice==14){
+      char detail[128];int matching=progress_pending_for(st);snprintf(detail,sizeof(detail),"Pending: %d on this connection; %d on previous connections",matching,progress_pending()-matching);
+      const char *actions[]={"Retry progress on this connection","Discard progress from previous connections","Discard all pending progress","Back"};int r=gui_choice("Playback recovery",detail,actions,4);if(r==GUI_QUIT)return r;
+      if(r==0){if(progress_retry(st))snprintf(notice,sizeof(notice),"Some progress remains pending. Reconnect and retry.");else snprintf(notice,sizeof(notice),"This connection's progress recovered. Other connections may still have records.");}
+      else if(r==1 || r==2){const char *confirm[]={"Discard these saved positions","Cancel"};int choice=gui_choice("Discard pending progress","Positions already accepted by Plex are unaffected.",confirm,2);if(choice==GUI_QUIT)return choice;if(choice==0)snprintf(notice,sizeof(notice),"%s",progress_discard(st,r==1)?"Could not save journal. Pending positions retained.":"Pending positions discarded.");}
+    }
     else if(choice==15){snprintf(notice,sizeof(notice),"%s",gui_cache_clear()?"Could not clear all cached posters.":"Poster cache cleared.");}
     else if(choice==16){st->bitrate=2000;st->resume=1;st->sort=0;st->autoplay=0;st->subtitles=1;st->performance=2;performance_apply(st->performance);save(st);}
     else if(choice==17){const char *rows2[]={"Unlink account on this Vita","Cancel"};int r=gui_choice("Unlink Plex","This removes this Vita's saved tokens.",rows2,2);if(r==GUI_QUIT)return r;
@@ -145,9 +151,10 @@ static int settings_screen(settings_t *st,const char *section) {
 static int login(settings_t *st) {
   plex_pin_t pin={0};
   for(;;) {
+    if(network_exit_requested())return GUI_QUIT;
     const char *rows[]={pin.pin_id?"Check link approval":"Get Plex link code","Enter Plex token manually","Settings"};
     char subtitle[256];
-    if(pin.pin_id)snprintf(subtitle,sizeof(subtitle),"Visit plex.tv/link and enter %s, then check approval.",pin.code);
+    if(pin.pin_id)snprintf(subtitle,sizeof(subtitle),"Code %.16s at plex.tv/link. %.190s",pin.code,notice[0]?notice:"Then check approval.");
     else snprintf(subtitle,sizeof(subtitle),"%s",notice[0]?notice:"Link your account once to browse your Plex libraries.");
     int r=gui_choice("Sign in to Plex",subtitle,rows,3);
     if(r==GUI_QUIT || r==GUI_BACK)return GUI_QUIT;
@@ -160,13 +167,13 @@ static int login(settings_t *st) {
     } else if(!pin.pin_id) {
       plex_pin_create_url(url,sizeof(url));gui_message("Plex sign in","Requesting a link code","If plex.tv is unavailable, you can enter a token manually.");
       if(network_pins(url,st->client_id,body,sizeof(body)) || plex_parse_pin_create(body,&pin))
-        snprintf(notice,sizeof(notice),"Link request failed (HTTP %d). Try manual token entry.",http_last_status());
+        snprintf(notice,sizeof(notice),"Link request failed at %s (HTTP %d / 0x%X). Try again or enter a token.",network_last_stage(),network_last_status(),network_last_error());
     } else {
       plex_pin_poll_url(pin.pin_id,url,sizeof(url));gui_message("Plex sign in","Checking approval","Your account token will be saved on this Vita.");
-      if(!request(st,url,"application/json") && !plex_parse_auth_token(body,st->token,sizeof(st->token))) {
+      if(request(st,url,"application/json")){if(network_last_status()==404 || network_last_status()==410)memset(&pin,0,sizeof(pin));continue;}
+      if(!plex_parse_auth_token(body,st->token,sizeof(st->token))) {
         snprintf(st->account_token,sizeof(st->account_token),"%s",st->token);if(!save(st))notice[0]=0;return 0;
       }
-      if(http_last_status()==404 || http_last_status()==410)memset(&pin,0,sizeof(pin));
       snprintf(notice,sizeof(notice),"Not approved yet. Enter the code at plex.tv/link.");
     }
   }
@@ -180,7 +187,7 @@ int main(void) {
   if(gui_init()<0){psvDebugScreenPrintf("Cannot load Plex interface. Reinstall the complete VPK.\n");sceKernelDelayThread(4000000);performance_restore();sceKernelExitProcess(1);return 1;}
   gui_message("Plex for Vita","Connecting","Loading your account and saved server settings.");
   sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(),0x10000);
-  int net=http_init();if(net<0)snprintf(notice,sizeof(notice),"Network setup failed (0x%X). Reconnect Wi-Fi; Square retries.",net);
+  int net=http_init();if(net<0)snprintf(notice,sizeof(notice),"Network setup failed at %s (0x%X). Square retries.",http_init_stage(),net);
   if(net>=0 && st.token[0] && progress_pending())progress_retry(&st);
   int depth=0,count=0,total=0,fetch=1;
   snprintf(locations[0].title,sizeof(locations[0].title),"Your libraries");

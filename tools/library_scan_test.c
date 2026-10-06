@@ -9,7 +9,7 @@ int gui_choice(const char *title,const char *subtitle,const char **rows,int coun
 void gui_message(const char *title,const char *message,const char *detail){(void)title;(void)message;(void)detail;}
 int network_get(const char *url,const char *client,const char *accept,char *body,unsigned cap,unsigned deadline){(void)client;(void)accept;assert(deadline==15);calls++;assert(strstr(url,"X-Plex-Token=a%26b"));if(strstr(url,"/refresh?")){scan++;assert(strstr(url,"/93/refresh?") || strstr(url,"/all/refresh?"));assert(!strstr(url,"force="));}snprintf(body,cap,"%s",listing);return fail;}
 int network_cancelled(void){return cancelled;}
-int http_last_status(void){return fail?403:200;}int http_last_error(void){return 0;}
+int network_last_status(void){return fail?403:200;}int network_last_error(void){return 0;}
 static void reset(void){choice_at=calls=fail=cancelled=scan=0;memset(choices,0,sizeof(choices));listing="<MediaContainer><Directory key='93' title='Movies' refreshing='0'/></MediaContainer>";}
 int main(void){settings_t s={0};snprintf(s.server,sizeof(s.server),"http://test:32400");snprintf(s.token,sizeof(s.token),"a&b");char body[4096],notice[256];
  reset();assert(library_scan(&s,"93",body,sizeof(body),notice,sizeof(notice))==GUI_BACK);assert(scan==1 && calls==1 && strstr(notice,"Scan requested"));

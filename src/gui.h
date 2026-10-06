@@ -23,3 +23,5 @@ int gui_snapshot(const char *path);
 int gui_wait(volatile int *done,void (*cancel)(void));
 int gui_choice_cursor(const char *title,const char *subtitle,const char **rows,int count,int *cursor);
 int gui_cache_clear(void);
+
+int gui_photo(const char *title,const char *path);

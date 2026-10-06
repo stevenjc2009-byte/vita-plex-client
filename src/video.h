@@ -10,3 +10,5 @@ void video_rows(const video_job_t *j,unsigned begin,unsigned end);
 int video_pool_init(void);
 void video_convert(const video_job_t *j);
 void video_pool_shutdown(void);
+
+unsigned video_observed_cores(void);

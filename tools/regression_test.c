@@ -115,6 +115,13 @@ int main(void) {
   if(saved)perror("settings_save");
   assert(!saved);
   remove("config.ini");
+  assert(!plex_build_music_url(&settings,"/library/metadata/42","session",12000,url,sizeof(url)));
+  assert(strstr(url,"/music/:/transcode/universal/start.m3u8?") && strstr(url,"audioCodec=aac") && strstr(url,"offset=12"));
+  assert(plex_build_music_url(&settings,"https://other/42","session",0,url,sizeof(url))<0);
+  assert(!plex_build_photo_url(&settings,"/library/parts/42/file.jpg",url,sizeof(url)) && strstr(url,"format=jpeg"));
+  assert(plex_build_photo_url(&settings,"//other/file.jpg",url,sizeof(url))<0);
+  char photo_part[256];assert(!plex_first_part_key("<Photo><Media><Part key='/library/parts/42/file.jpg'/></Media></Photo>",photo_part,sizeof(photo_part)));
+  assert(!strcmp(photo_part,"/library/parts/42/file.jpg"));assert(plex_first_part_key("<Part key='https://other/file.jpg'/>",photo_part,sizeof(photo_part))<0);
   puts("Plex regression tests passed");
   return 0;
 }

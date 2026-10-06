@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdlib.h>
 static int step,fail_step,modules,blocks,mutexes,net,ctl,http,ssl,templates,connections,requests,files;
+static int external_modules;
+int sceSysmoduleIsLoaded(int module){(void)module;return external_modules?0:-1;}
 static int declared,status=200,cancel_read,aborted,removed,close_fail,read_at;static unsigned payload_size,written;static uint64_t ticks;
 const unsigned char plex_ca_root[]={0},plex_ca_int[]={0};const unsigned plex_ca_root_len=1,plex_ca_int_len=1;
 static int fail(void){return ++step==fail_step;}
@@ -36,7 +38,7 @@ int sceIoOpen(const char*p,int f,int m){(void)p;(void)f;(void)m;files++;return 2
 int sceIoWrite(int i,const void*p,unsigned n){assert(i==20 && p);written+=n;return (int)n;}
 int sceIoClose(int i){assert(i==20);files--;return close_fail?-1:0;}int sceIoRemove(const char*p){assert(p);removed++;return 0;}
 int main(void){
- for(int fault=1;fault<=12;fault++){step=0;fail_step=fault;assert(http_init()<0);empty();}
+ for(int fault=1;fault<=12;fault++){step=0;fail_step=fault;int result=http_init();if(fault<=8){assert(result<0);empty();}else {assert(!result);char body[16];payload_size=10;http_prepare(5);assert(!http_get("http://test","id","xml",body,sizeof(body)));assert(http_get("https://test","id","xml",body,sizeof(body))<0 && http_last_error()==-1);http_shutdown();empty();}}
  step=fail_step=0;assert(!http_init());char body[16];http_prepare(5);payload_size=10;assert(!http_get("http://test","id","text/xml",body,sizeof(body)) && strlen(body)==10);
  http_prepare(5);payload_size=30;assert(http_get("http://test","id","text/xml",body,sizeof(body))<0 && !body[0]);
  http_prepare(5);http_cancel();assert(http_get("http://test","id","text/xml",body,sizeof(body))<0 && !body[0]);
@@ -44,5 +46,5 @@ int main(void){
  volatile int cancel=0;payload_size=600*1024;declared=1;http_prepare(5);assert(http_download_art("http://test","poster.jpg",&cancel)<0 && !files && !written);
  declared=0;http_prepare(5);assert(http_download_art("http://test","poster.jpg",&cancel)<0 && written<=512*1024 && removed==1 && !files);
  written=0;payload_size=100;close_fail=1;http_prepare(5);assert(http_download_art("http://test","poster.jpg",&cancel)<0 && removed==2 && !files);
- http_shutdown();empty();puts("HTTP initialization unwind, cancellation, truncation, download bounds and close failure tests passed");return 0;
+ http_shutdown();empty();external_modules=1;step=fail_step=0;assert(!http_init() && !modules);http_shutdown();empty();puts("HTTP initialization unwind, cancellation, truncation, download bounds and close failure tests passed");return 0;
 }

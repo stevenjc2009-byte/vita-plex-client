@@ -4,12 +4,14 @@ project(vita-plex-client C)
 # Windows: cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/Users/steve/vita-dev/vitasdk/vitasdk/share/vita.toolchain.cmake -B build
 set(VITA_TITLEID "PLEX00001")
 set(VITA_TITLE "Plex Client")
-set(VITA_VERSION "01.34")
+set(VITA_VERSION "01.35")
 
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 add_executable(${PROJECT_NAME}
   src/performance.c
+  src/touch.c
+  src/text.c
   src/library.c
   src/network.c
   src/progress.c
@@ -37,6 +39,8 @@ target_link_options(${PROJECT_NAME} PRIVATE "LINKER:-z,norelro")
 target_compile_options(${PROJECT_NAME} PRIVATE -Os -Wall -Wextra -Wno-misleading-indentation -Wno-unused-parameter -ffunction-sections -fdata-sections)
 target_link_options(${PROJECT_NAME} PRIVATE "LINKER:--gc-sections")
 target_link_libraries(${PROJECT_NAME}
+  SceSysmem_stub
+  SceTouch_stub
   ScePower_stub
   SceDisplay_stub
   SceCtrl_stub

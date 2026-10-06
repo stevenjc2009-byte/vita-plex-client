@@ -78,3 +78,18 @@ int scePowerSetArmClockFrequency(int);
 int scePowerSetGpuClockFrequency(int);
 
 uint64_t sceKernelGetProcessTimeWide(void);
+
+#define SCE_POWER_CB_APP_RESUME 0x200000
+#define SCE_POWER_CB_SYSTEM_RESUME 0x40000
+int sceKernelCreateCallback(const char*,unsigned,int(*)(int,int,int,void*),void*);
+int sceKernelDeleteCallback(int);int sceKernelCheckCallback(void);
+int scePowerRegisterCallback(int);int scePowerUnregisterCallback(int);int sceKernelGetCpuId(void);
+
+int sceIoMkdir(const char*,int);
+
+#define SCE_CTRL_UP 64
+#define SCE_CTRL_DOWN 128
+#define SCE_CTRL_SELECT 256
+#define SCE_CTRL_SQUARE 512
+#define SCE_CTRL_LTRIGGER 1024
+#define SCE_CTRL_RTRIGGER 2048

@@ -7,6 +7,7 @@ New-Item -ItemType Directory -Path $plexInclude -Force | Out-Null
 Set-Content -LiteralPath (Join-Path $plexInclude 'threadmgr.h') -Value '#include <psp2/mock.h>'
 Set-Content -LiteralPath (Join-Path $plexScratch 'include/psp2/types.h') -Value '#include <psp2/mock.h>'
 Set-Content -LiteralPath (Join-Path $plexScratch 'include/psp2/power.h') -Value '#include <psp2/mock.h>'
+Set-Content -LiteralPath (Join-Path $plexInclude 'cpu.h') -Value '#include <psp2/mock.h>'
 Push-Location $plexRoot
 try {
  $plexExe=Join-Path $plexScratch 'core_tests.exe'
@@ -22,5 +23,7 @@ try {
   if($LASTEXITCODE){throw 'Journal test failed'}
   ./progress_test.exe recover
   if($LASTEXITCODE){throw 'Recovery test failed'}
+  ./progress_test.exe legacy
+  if($LASTEXITCODE){throw 'Legacy journal compatibility failed'}
  } finally {Pop-Location}
 } finally {Pop-Location}

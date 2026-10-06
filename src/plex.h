@@ -23,3 +23,6 @@ int plex_build_playback_url(const settings_t *settings, const char *key,
   const char *session, unsigned offset_ms, char *out, unsigned size);
 int plex_hls_media_url(const char *playlist_url, const char *body,
   const char *token, char *out, unsigned size);
+
+int plex_build_music_url(const settings_t *settings,const char *key,const char *session,unsigned offset_ms,char *out,unsigned cap);
+int plex_build_photo_url(const settings_t *settings,const char *key,char *out,unsigned cap);

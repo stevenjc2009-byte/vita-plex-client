@@ -9,3 +9,6 @@ void performance_apply(int mode);
 void performance_restore(void);
 void performance_describe(char *out,unsigned cap);
 int performance_fourth_core(void);
+
+void performance_poll(void);
+int performance_take_resume(void);

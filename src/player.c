@@ -26,6 +26,7 @@
 #include "gui.h"
 #include "video.h"
 #include "performance.h"
+#include "touch.h"
 
 // Own append-log (main.c owns debug.log truncated at boot; we append).
 static SceUID p_log = -1;
@@ -67,6 +68,9 @@ static int display_index;
 static uint64_t conversion_total;static unsigned conversion_count,conversion_max;
 static volatile int paused;
 static volatile int audio_error;
+static unsigned audio_seen,last_audio;static int start_paused;
+void player_start_paused(int state){start_paused=state;}
+int player_was_paused(void){return paused;}
 
 static void *player_alloc(void *arg,uint32_t alignment,uint32_t size) {
   (void)arg;
@@ -138,6 +142,7 @@ static int audio_thread(SceSize argc, void *argv) {
       sceKernelDelayThread(5000);
       continue;
     }
+    __atomic_store_n(&last_audio,(unsigned)sceKernelGetProcessTimeWide(),__ATOMIC_RELEASE);__atomic_store_n(&audio_seen,1,__ATOMIC_RELEASE);
     channels = (int)fr.details.audio.channelCount;
     if (channels < 1 || channels > 2) { plog("unsupported audio channels=%d",channels);audio_error=-6;return -6; }
 
@@ -220,9 +225,9 @@ int player_active(void) {
 // Returns 0 after normal playback, <0 when nothing ever played:
 // -1 no handle, -2 framebuffer alloc fail, -3 stream never went
 // active within 45s (bad URL / server refused), -4 user cancelled wait.
-int player_run(const char *title,unsigned duration,unsigned base_offset) {
+int player_run_media(const char *title,unsigned duration,unsigned base_offset,int audio_only) {
   if (handle < 0) return -1;
-  stop_flag = 0;
+  stop_flag = 0;audio_seen=last_audio=0;performance_take_resume();touch_state_t touch;touch_init(&touch);
   fb_block = sceKernelAllocMemBlock("plex_video",
     SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
     2 * 1024 * 1024, NULL); // CDRAM sizes must be 256KB aligned
@@ -238,7 +243,7 @@ int player_run(const char *title,unsigned duration,unsigned base_offset) {
   display_frames[0]=framebuf;display_frames[1]=NULL;
   if(second_fb>=0)sceKernelGetMemBlockBase(second_fb,(void**)&display_frames[1]);
   if(!clean_frame || !display_frames[1]){player_stop();return -2;}
-  display_index=0;memset(framebuf,0,FB_W*FB_H*4);video_pool_init();
+  display_index=0;memset(framebuf,0,FB_W*FB_H*4);if(!audio_only)video_pool_init();
 
   SceCtrlData pad, old;
   memset(&old, 0, sizeof(old));
@@ -252,9 +257,9 @@ int player_run(const char *title,unsigned duration,unsigned base_offset) {
   int waited = 0, cancelled = 0;
   while (!stop_flag && sceAvPlayerIsActive(handle) != SCE_TRUE &&
       waited < 450) {
-    sceCtrlPeekBufferPositive(0, &pad, 1);
+    performance_poll();sceCtrlPeekBufferPositive(0, &pad, 1);
     unsigned pressed = pad.buttons & ~old.buttons;
-    old = pad;
+    old = pad;if(touch_poll(&touch))pressed|=SCE_CTRL_CIRCLE;
     if (pressed & (SCE_CTRL_CIRCLE|SCE_CTRL_START)) { cancelled = pressed&SCE_CTRL_START?2:1; break; }
     sceKernelDelayThread(100000);
     waited++;
@@ -267,6 +272,7 @@ int player_run(const char *title,unsigned duration,unsigned base_offset) {
     return -3;
   }
 
+  if(start_paused && sceAvPlayerPause(handle)>=0)paused=1;start_paused=0;
   // Starting before IsActive made the audio thread exit during buffering.
   audio_tid = performance_thread("plex_audio",audio_thread,0x10000100,0x4000,0x20000);
   int r = audio_tid;
@@ -283,29 +289,32 @@ int player_run(const char *title,unsigned duration,unsigned base_offset) {
   int quit=0,user_stopped=0,show_controls=180,restart=0,play_error=0,redraw=1,last_visible=-1;
   unsigned last_second=~0u,last_progress=0;int progress_sent=0;
   uint64_t last_frame=sceKernelGetProcessTimeWide();
-  while (!stop_flag && (paused || sceAvPlayerIsActive(handle) == SCE_TRUE)) {
+  while (!stop_flag) {
+    performance_poll();if(performance_take_resume()){seek_position=valid_position?final_position:base_offset;restart=1;break;}
+    if(!paused && sceAvPlayerIsActive(handle)!=SCE_TRUE)break;
     if(audio_error){plog("audio output FAIL 0x%X",audio_error);break;}
-    if (sceAvPlayerGetVideoData(handle, &vf) && vf.pData) {
+    if (!audio_only && sceAvPlayerGetVideoData(handle, &vf) && vf.pData) {
       if (!frames)
         plog("play first frame %ux%u", vf.details.video.width,
           vf.details.video.height);
       if(blit_frame(&vf)){plog("invalid video frame %ux%u",vf.details.video.width,vf.details.video.height);play_error=-7;break;}
       frames++;
-      if(!(frames%120))plog("render conversion avg=%uus max=%uus frames=%d stamp=%llu clock=%llu",conversion_count?(unsigned)(conversion_total/conversion_count):0,conversion_max,frames,(unsigned long long)vf.timeStamp,(unsigned long long)sceAvPlayerCurrentTime(handle));
+      if(!(frames%120))plog("render conversion avg=%uus max=%uus frames=%d stamp=%llu clock=%llu cores=%X",conversion_count?(unsigned)(conversion_total/conversion_count):0,conversion_max,frames,(unsigned long long)vf.timeStamp,(unsigned long long)sceAvPlayerCurrentTime(handle),video_observed_cores());
       last_frame=sceKernelGetProcessTimeWide();
       valid_position=1;redraw=1;
     }
-    if(paused)last_frame=sceKernelGetProcessTimeWide();
+    if(audio_only && __atomic_load_n(&audio_seen,__ATOMIC_ACQUIRE))valid_position=1;
+    if(paused){last_frame=sceKernelGetProcessTimeWide();if(audio_only)__atomic_store_n(&last_audio,(unsigned)last_frame,__ATOMIC_RELEASE);}
     if(valid_position)final_position=base_offset+(unsigned)sceAvPlayerCurrentTime(handle);
     int visible=show_controls>0;unsigned second=final_position/1000;
     if(visible!=last_visible || (visible && second!=last_second))redraw=1;
     if(redraw){display_index^=1;framebuf=display_frames[display_index];memcpy(framebuf,clean_frame,FB_W*FB_H*4);
       if(visible)gui_player_overlay(framebuf,title,final_position,duration,paused,NULL);present();redraw=0;last_visible=visible;last_second=second;}
-    if(show_controls>0 && !paused)show_controls--;
+    if(show_controls>0 && !paused && !audio_only)show_controls--;
     if(progress_callback && valid_position && (second>=last_progress+10 || !progress_sent)){progress_callback(final_position,paused?2:1);last_progress=second;progress_sent=1;}
     sceCtrlPeekBufferPositive(0, &pad, 1);
     unsigned pressed = pad.buttons & ~old.buttons;
-    old = pad;
+    old = pad;if(touch_poll(&touch)){if(!show_controls)pressed|=SCE_CTRL_TRIANGLE;else if(touch.y>=FB_H-80){pressed|=touch.x<240?SCE_CTRL_CROSS:touch.x<420?SCE_CTRL_CIRCLE:touch.x<610?SCE_CTRL_LEFT:touch.x<800?SCE_CTRL_RIGHT:SCE_CTRL_TRIANGLE;}else pressed|=SCE_CTRL_TRIANGLE;}
     if (pressed & SCE_CTRL_START) {quit=1;break;}
     if (pressed & SCE_CTRL_CIRCLE){user_stopped=1;break;}
     if (pressed & SCE_CTRL_CROSS) {
@@ -323,15 +332,17 @@ int player_run(const char *title,unsigned duration,unsigned base_offset) {
       restart=1;break; // rebuild HLS at absolute time, including before the resume base
     }
     // A stream that never produces video must not be reported as success.
-    if(!paused && sceKernelGetProcessTimeWide()-last_frame>45000000ULL){plog("video stalled");play_error=-5;break;}
+    if(!paused && (audio_only && __atomic_load_n(&audio_seen,__ATOMIC_ACQUIRE)?(unsigned)((unsigned)sceKernelGetProcessTimeWide()-__atomic_load_n(&last_audio,__ATOMIC_ACQUIRE))>45000000u:sceKernelGetProcessTimeWide()-last_frame>45000000ULL)){plog("video stalled");play_error=-5;break;}
     sceDisplayWaitVblankStart();
   }
   plog("play end frames=%d", frames);
 
-  natural_end=!play_error && !audio_error && !restart && !quit && !user_stopped && frames && sceAvPlayerIsActive(handle)!=SCE_TRUE;
+  natural_end=!play_error && !audio_error && !restart && !quit && !user_stopped && valid_position && sceAvPlayerIsActive(handle)!=SCE_TRUE;
+  if(natural_end && duration && final_position<duration && duration-final_position>5000){natural_end=0;play_error=-8;plog("stream ended before expected duration");}
   player_stop();
-  return play_error?play_error:audio_error?audio_error:restart?2:quit?1:frames?0:-5;
+  return play_error?play_error:audio_error?audio_error:restart?2:quit?1:(frames || (audio_only && audio_seen) || user_stopped)?0:-5;
 }
+int player_run(const char *title,unsigned duration,unsigned offset){return player_run_media(title,duration,offset,0);}
 int player_run_blocking(void){return player_run("Now playing",0,0);}
 unsigned player_position(void){return valid_position?final_position:0;}
 unsigned player_seek_position(void){return seek_position;}
@@ -371,7 +382,9 @@ int player_play_hls(const char *hls_url) {
   (void)hls_url;
   return -1; // host stub: no AvPlayer
 }
+void player_start_paused(int state){(void)state;}int player_was_paused(void){return 0;}
 int player_active(void) { return 0; }
+int player_run_media(const char*t,unsigned d,unsigned o,int a){(void)t;(void)d;(void)o;(void)a;return -1;}
 int player_run_blocking(void) { return -1; }
 int player_run(const char *title,unsigned duration,unsigned offset){(void)title;(void)duration;(void)offset;return -1;}
 unsigned player_position(void){return 0;}

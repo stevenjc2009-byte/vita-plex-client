@@ -27,3 +27,5 @@ void plex_build_timeline_url(const char *server, const char *token,
 int plex_parse_items_offset(const char *xml,const char *tag,browse_item_t *out,int max,int skip);
 typedef struct {char id[32],label[160];int type,selected;} plex_stream_t;
 int plex_parse_streams(const char *xml,plex_stream_t *out,int max,char *part,unsigned cap);
+
+int plex_first_part_key(const char *xml,char *out,unsigned cap);

@@ -10,3 +10,8 @@ unsigned player_position(void);
 unsigned player_seek_position(void);
 int player_completed(void);
 void player_progress_callback(void (*callback)(unsigned position,int state));
+
+int player_run_media(const char *title,unsigned duration,unsigned offset,int audio_only);
+
+void player_start_paused(int paused);
+int player_was_paused(void);

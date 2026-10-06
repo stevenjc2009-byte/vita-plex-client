@@ -1,4 +1,6 @@
 #include "gui.h"
+#include "text.h"
+#include "touch.h"
 #include "http.h"
 #include "plex_auth.h"
 #include "debugScreen.h"
@@ -34,7 +36,7 @@
 #define WHITE 0xFFF2F0EFu
 #define GREY 0xFFA5A09Au
 #define BLACK 0xFF090909u
-#ifdef __vita__
+#if defined(__vita__) && !defined(PLEX_MOCK_VITA)
 #define FONT_DIR "app0:assets/"
 #define ART_DIR "ux0:data/plex-client/art/"
 #else
@@ -132,22 +134,14 @@ static void rect(int x,int y,int w,int h,unsigned color) {
 static void border(int x,int y,int w,int h,unsigned color) {
   rect(x,y,w,2,color);rect(x,y+h-2,w,2,color);rect(x,y,2,h,color);rect(x+w-2,y,2,h,color);
 }
-static unsigned next_cp(const char **s) {
-  const unsigned char *p=(const unsigned char*)*s; unsigned c=*p++;
-  if(c>=0xC2 && c<=0xF4) {
-    int n=c<0xE0?1:c<0xF0?2:3; c&=(1u<<(6-n))-1;
-    for(int i=0;i<n;i++) { if((*p&0xC0)!=0x80) {c='?';break;} c=(c<<6)|(*p++&63); }
-  }
-  *s=(const char*)p; return c>=32 && c<=0x10FFFF?c:'?';
-}
 static unsigned font_index(const font_t *f,unsigned cp){if(!f->codes)return cp>=32 && cp<256?cp-32:'?'-32;
  unsigned lo=0,hi=f->count;while(lo<hi){unsigned mid=(lo+hi)/2;const unsigned char *p=f->codes+mid*4;unsigned v=p[0]|(p[1]<<8)|(p[2]<<16)|((unsigned)p[3]<<24);if(v<cp)lo=mid+1;else hi=mid;}
- if(lo<f->count){const unsigned char *p=f->codes+lo*4;unsigned v=p[0]|(p[1]<<8)|(p[2]<<16)|((unsigned)p[3]<<24);if(v==cp)return lo;}return '?'-32;
+ if(lo<f->count){const unsigned char *p=f->codes+lo*4;unsigned v=p[0]|(p[1]<<8)|(p[2]<<16)|((unsigned)p[3]<<24);if(v==cp)return lo;}return cp=='?'?0:font_index(f,'?');
 }
 static int width(const char *s,int size) {
   font_t *f=fonts+size; int n=0;
   if(!s || !f->data)return 0;
-  while(*s)n+=f->widths[font_index(f,next_cp(&s))]; return n;
+  while(*s)n+=f->widths[font_index(f,text_next(&s))]; return n;
 }
 static void glyph(unsigned cp,int x,int y,int size,unsigned col) {
   font_t *f=fonts+size; if(!f->data)return;
@@ -164,23 +158,24 @@ static void text(const char *s,int x,int y,int size,unsigned col,int max) {
   if(!s || !fonts[size].data)return;
   int start=x, dots=width("...",size), truncated=width(s,size)>max;
   while(*s) {
-    const char *before=s; unsigned cp=next_cp(&s); unsigned advance=fonts[size].widths[font_index(fonts+size,cp)];
+    const char *before=s; unsigned cp=text_next(&s); unsigned advance=fonts[size].widths[font_index(fonts+size,cp)];
     if(x-start+(int)advance>(truncated?max-dots:max)) { s=before;break; }
     glyph(cp,x,y,size,col);x+=(int)advance;
   }
-  if(*s && max>=dots) { for(int i=0;i<3;i++){glyph('.',x,y,size,col);x+=fonts[size].widths['.'-32];} }
+  if(*s && max>=dots) { for(int i=0;i<3;i++){glyph('.',x,y,size,col);x+=fonts[size].widths[font_index(fonts+size,'.')];} }
 }
 static void wrap(const char *s,int x,int y,int max,int lines) {
   char line[256];
   while(s && *s && lines-->0) {
     int n=0, last=-1;
     while(s[n] && s[n]!='\n' && n<250) {
-      line[n]=s[n];line[n+1]=0;
+      const char *end=s+n;text_next(&end);int bytes=(int)(end-(s+n));if(n+bytes>250)break;
+      memcpy(line+n,s+n,(size_t)bytes);line[n+bytes]=0;
       if(width(line,1)>max)break;
-      if(s[n]==' ')last=n; n++;
+      if(s[n]==' ')last=n;n+=bytes;
     }
     if(s[n] && s[n]!='\n' && last>0)n=last;
-    if(!n)n=1;
+    if(!n){const char *end=s;text_next(&end);n=(int)(end-s);}
     memcpy(line,s,(size_t)n);line[n]=0; text(line,x,y,1,GREY,max);
     s+=n;while(*s==' ' || *s=='\n')s++; y+=28;
   }
@@ -189,6 +184,7 @@ static const char *kind(const browse_item_t *it) {
   if(!strcmp(it->type,"show"))return "SERIES";
   if(!strcmp(it->type,"season"))return "SEASON";
   if(!strcmp(it->type,"episode"))return "EPISODE";
+  if(!strcmp(it->type,"album"))return "ALBUM";
   if(!strcmp(it->type,"artist") || !strcmp(it->type,"track"))return "MUSIC";
   if(!strcmp(it->type,"photo"))return "PHOTOS";
   if(!strcmp(it->type,"movie"))return "MOVIES";
@@ -200,9 +196,9 @@ static void shell(const char *title,const char *subtitle,int nav) {
   static const char *links[]={"Home","Libraries","Search","Refresh list","Scan library","Settings"};
   for(int i=0;i<6;i++) {
     if(nav==i){rect(12,124+i*52,152,42,TILE);rect(12,124+i*52,3,42,GOLD);}
-    text(links[i],30,132+i*52,1,nav==i?WHITE:GREY,132);
+    text(links[i],30,132+i*52,1,nav==-2?0xFF69645Fu:nav==i?WHITE:GREY,132);
   }
-  text("SELECT  Settings",22,451,0,GREY,148);
+  text(nav==-2?"O       Back":"SELECT  Settings",22,451,0,GREY,148);
   text("START   Exit",22,481,0,GREY,148);
   text(title,202,18,2,WHITE,724);
   text(subtitle,202,65,0,GREY,720);
@@ -221,7 +217,7 @@ static void draw_grid(const gui_view_t *v,int nav) {
   shell(v->title,v->subtitle,nav);
   int per=v->libraries?6:PAGE,cols=v->libraries?3:COLS;
   int page=v->cursor/per;
-  if(!v->n){text("Nothing here yet",220,191,2,WHITE,620);wrap(v->notice && *v->notice?v->notice:"Refresh this library or try a different search.",220,249,610,4);}
+  if(!v->n){text("No items to show",220,191,2,WHITE,620);wrap(v->notice && *v->notice?v->notice:"Refresh this library or try a different search.",220,249,610,4);}
   for(int cell=0;cell<per;cell++) {
     int i=page*per+cell;if(i>=v->n)break;
     const browse_item_t *it=v->items+i;
@@ -253,7 +249,7 @@ static void draw_grid(const gui_view_t *v,int nav) {
   char info[80];int absolute=v->offset+(v->n?v->cursor+1:0);
   snprintf(info,sizeof(info),"%d / %d",absolute,v->total);text(info,828,65,0,GOLD,100);
   if(v->n && v->notice && *v->notice)text(v->notice,202,497,0,GOLD,716);
-  text("X Open   O Back   Triangle Search   Square Refresh   L/R Pages",202,523,0,GREY,730);
+  text("Back",214,519,0,GREY,110);text("Search",342,519,0,GREY,110);text("Refresh",484,519,0,GREY,120);text("< Previous",634,519,0,GREY,140);text("Next >",810,519,0,GREY,110);
 }
 void gui_draw_grid(const gui_view_t *v){draw_grid(v,-1);}
 void gui_message(const char *title,const char *message,const char *detail) {
@@ -323,13 +319,15 @@ static void start_art(const gui_view_t *v,int page) {
 #endif
 }
 #ifdef __vita__
-typedef struct { unsigned old; int held; } input_t;
-static void input_init(input_t *in) {SceCtrlData p={0};sceCtrlPeekBufferPositive(0,&p,1);in->old=p.buttons;in->held=0;}
+#define TOUCH_EVENT (1u<<31)
+typedef struct { unsigned old; int held;touch_state_t touch; } input_t;
+static void input_init(input_t *in) {SceCtrlData p={0};sceCtrlPeekBufferPositive(0,&p,1);in->old=p.buttons;in->held=0;touch_init(&in->touch);}
 static unsigned input_read(input_t *in) {
+  performance_poll();
   SceCtrlData p={0};sceCtrlPeekBufferPositive(0,&p,1);unsigned fresh=p.buttons&~in->old;
   unsigned dirs=p.buttons&(SCE_CTRL_LEFT|SCE_CTRL_RIGHT|SCE_CTRL_UP|SCE_CTRL_DOWN);
   if(dirs && p.buttons==in->old){in->held++;if(in->held>=24 && !(in->held%5))fresh|=dirs;}else in->held=0;
-  in->old=p.buttons;sceKernelDelayThread(16000);return fresh;
+  in->old=p.buttons;if(touch_poll(&in->touch))fresh|=TOUCH_EVENT;sceKernelDelayThread(16000);return fresh;
 }
 #endif
 int gui_browse_view(gui_view_t *v) {
@@ -344,6 +342,14 @@ int gui_browse_view(gui_view_t *v) {
     if(observed!=version){version=observed;dirty=1;}
     if(dirty){draw_grid(v,nav);present();dirty=0;}
     unsigned p=input_read(&in);if(!p)continue;dirty=1;
+    if(p&TOUCH_EVENT){int x=in.touch.x,y=in.touch.y;int selected=touch_sidebar(x,y);
+      if(selected>=0){int actions[]={GUI_VIEWS,GUI_HOME,GUI_SEARCH,GUI_REFRESH,GUI_SCAN,GUI_SETTINGS};result=actions[selected];break;}
+      if(x<176 && y>=451 && y<478){result=GUI_SETTINGS;break;}if(x<176 && y>=481){result=GUI_QUIT;break;}
+      int cell=touch_grid(x,y,v->libraries),index=page*per+cell;if(cell>=0 && index<v->n){v->cursor=index;result=index;break;}
+      if(y>=514 && x>=202){result=x<330?GUI_BACK:x<470?GUI_SEARCH:x<620?GUI_REFRESH:x<780?GUI_PREVIOUS:GUI_NEXT;if(result==GUI_PREVIOUS && !v->offset && !page)continue;if(result==GUI_NEXT && (page+1)*per>=v->n && v->offset+v->n>=v->total)continue;
+        if(result==GUI_PREVIOUS && page){v->cursor=(page-1)*per;continue;}if(result==GUI_NEXT && (page+1)*per<v->n){v->cursor=(page+1)*per;continue;}break;}
+      continue;
+    }
     if(p&SCE_CTRL_START){result=GUI_QUIT;break;}
     if(p&SCE_CTRL_SELECT){result=GUI_SETTINGS;break;}
     if(p&SCE_CTRL_TRIANGLE){result=GUI_SEARCH;break;}
@@ -378,13 +384,13 @@ int gui_browse_view(gui_view_t *v) {
   stop_art();return result;
 }
 static void draw_choices(const char *title,const char *subtitle,const char **rows,int count,int cursor) {
-  shell(title,subtitle,-1);int first=(cursor/7)*7;
+  shell(title,subtitle,-2);int first=(cursor/7)*7;
   for(int i=first;i<count && i<first+7;i++) {
     int y=123+(i-first)*48;
     rect(220,y,680,40,i==cursor?TILE:PANEL);if(i==cursor)rect(220,y,3,40,GOLD);
     text(rows[i],240,y+6,1,i==cursor?WHITE:GREY,640);
   }
-  text("X Select   O Back   START Exit",220,514,0,GREY,680);
+  rect(220,510,210,30,TILE);rect(470,510,140,30,TILE);rect(640,510,130,30,TILE);rect(800,510,100,30,TILE);text("Back",232,514,0,GREY,190);text("Up",482,514,0,GREY,115);text("Down",652,514,0,GREY,105);text("Exit",812,514,0,GREY,75);
 }
 int gui_choice_cursor(const char *title,const char *subtitle,const char **rows,int count,int *selection) {
   int cursor=selection?*selection:0;if(cursor<0 || cursor>=count)cursor=0;
@@ -393,6 +399,8 @@ int gui_choice_cursor(const char *title,const char *subtitle,const char **rows,i
   for(;;) {
     if(dirty){draw_choices(title,subtitle,rows,count,cursor);present();dirty=0;}
     unsigned p=input_read(&in);if(!p)continue;dirty=1;
+    if(p&TOUCH_EVENT){int index=touch_choice(in.touch.x,in.touch.y);if(index>=0){index+=(cursor/7)*7;if(index<count){if(selection)*selection=index;return index;}}
+      if(in.touch.y>=510){if(in.touch.x<450)return GUI_BACK;if(in.touch.x>=780)return GUI_QUIT;p|=in.touch.x<620?SCE_CTRL_UP:SCE_CTRL_DOWN;}else continue;}
     if(p&SCE_CTRL_CIRCLE)return GUI_BACK;if(p&SCE_CTRL_START)return GUI_QUIT;
     if(p&SCE_CTRL_UP && cursor>0)cursor--;if(p&SCE_CTRL_DOWN && cursor+1<count)cursor++;
     if(p&SCE_CTRL_CROSS && count>0){if(selection)*selection=cursor;return cursor;}
@@ -406,7 +414,7 @@ int gui_wait(volatile int *done,void (*cancel)(void)) {
 #ifdef __vita__
  input_t in;input_init(&in);int action=0;
  while(!__atomic_load_n(done,__ATOMIC_ACQUIRE)){
-  unsigned p=input_read(&in);if(!action && p&(SCE_CTRL_CIRCLE|SCE_CTRL_START)){action=p&SCE_CTRL_START?GUI_QUIT:GUI_BACK;if(cancel)cancel();}
+  unsigned p=input_read(&in);if(p&TOUCH_EVENT)p|=SCE_CTRL_CIRCLE;if(!action && p&(SCE_CTRL_CIRCLE|SCE_CTRL_START)){action=p&SCE_CTRL_START?GUI_QUIT:GUI_BACK;if(cancel)cancel();}
  }
  return action;
 #else
@@ -428,34 +436,41 @@ static void cache_trim(unsigned reserve) {
 int gui_cache_clear(void){stop_art();DIR *dir=opendir(ART_DIR);if(!dir)return 0;struct dirent *entry;int result=0;
  while((entry=readdir(dir)))if(cache_file(entry->d_name)){char path[160];snprintf(path,sizeof(path),ART_DIR "%.12s",entry->d_name);if(remove(path))result=-1;}closedir(dir);return result;}
 int gui_keyboard(const char *title,char *value,unsigned size,int masked) {
-  static const char *keys[]={"abcdefghijklm","nopqrstuvwxyz","ABCDEFGHIJKLM","NOPQRSTUVWXYZ","0123456789-_.","/:?&=+@!#%() "};
+  static const char *pages[4][6]={
+ {"abcdefghijklm","nopqrstuvwxyz","ABCDEFGHIJKLM","NOPQRSTUVWXYZ","0123456789-_.","/:?&=+@!#%() "},
+ {"àáâãäåæçèéêëì","íîïñòóôõöøœùú","ûüýÿßÀÁÂÃÄÅÆÇ","ÈÉÊËÌÍÎÏÑÒÓÔÕ","ÖØŒÙÚÛÜÝąćęłń","óśźżčšžğİı "},
+ {"αβγδεζηθικλμν","ξοπρστυφχψως","ΑΒΓΔΕΖΗΘΙΚΛΜΝ","ΞΟΠΡΣΤΥΦΧΨΩ","άέήίόύώϊϋΐΰ","0123456789-. "},
+ {"абвгдеёжзийкл","мнопрстуфхцчш","щъыьэюяієїґ ","АБВГДЕЁЖЗИЙКЛ","МНОПРСТУФХЦЧШ","ЩЪЫЬЭЮЯІЄЇҐ "}};
+  int page=0;const char **keys=pages[page];
   char buffer[256];if(!size || size>sizeof(buffer))return GUI_BACK;
   snprintf(buffer,sizeof(buffer),"%s",value);int row=0,col=0;
 #ifdef __vita__
   input_t in;input_init(&in);int dirty=1;
   for(;;) {
     if(dirty) {
-      shell(title,masked?"Your token is stored on this Vita":"Use the D-pad to type",-1);
+      shell(title,masked?"Your token is stored on this Vita":"D-pad types; L/R switches character pages",-2);
       rect(204,114,720,64,PANEL);char shown[256];snprintf(shown,sizeof(shown),"%s",buffer);
       if(masked)memset(shown,'*',strlen(shown));
-      const char *tail=shown;while(*tail && width(tail,1)>670)tail++;
+      const char *tail=shown;while(*tail && width(tail,1)>670)text_next(&tail);
       text(tail,224,130,1,WHITE,674);
-      for(int r=0;r<6;r++)for(int c=0;keys[r][c];c++) {
-        int x=212+c*54,y=199+r*45,sel=r==row && c==col;
-        rect(x,y,48,37,sel?GOLD:TILE);char label[3]={keys[r][c],0,0};
-        if(keys[r][c]==' ')snprintf(label,sizeof(label),"sp");
+      for(int r=0;r<6;r++)for(unsigned c=0;c<text_count(keys[r]);c++) {
+        int x=212+c*54,y=199+r*45,sel=r==row && c==(unsigned)col;
+        rect(x,y,48,37,sel?GOLD:TILE);char label[5]={0};const char *character=text_at(keys[r],c),*end=character;text_next(&end);memcpy(label,character,(size_t)(end-character));
+        if(*character==' ')snprintf(label,sizeof(label),"sp");
         text(label,x+15,y+4,1,sel?BLACK:WHITE,45);
       }
-      text("X Type   Square Delete   Triangle Save   O Cancel",212,500,0,GREY,700);present();dirty=0;
+      rect(212,492,146,36,TILE);rect(378,492,146,36,TILE);rect(544,492,146,36,TILE);rect(710,492,198,36,TILE);text("Delete",224,500,0,GREY,122);text("Save",390,500,0,GREY,122);text("Cancel",556,500,0,GREY,122);text(masked?"ASCII only":"Characters >",722,500,0,GREY,175);present();dirty=0;
     }
     unsigned p=input_read(&in);if(!p)continue;dirty=1;
+    if(p&TOUCH_EVENT){int x=in.touch.x,y=in.touch.y;if(y>=492 && x>=212){p|=x<370?SCE_CTRL_SQUARE:x<535?SCE_CTRL_TRIANGLE:x<700?SCE_CTRL_CIRCLE:SCE_CTRL_RTRIGGER;}
+      else if(x>=212 && y>=199 && y<469 && (x-212)%54<48 && (y-199)%45<37){int r=(y-199)/45,c=(x-212)/54;if(r<6 && (unsigned)c<text_count(keys[r])){row=r;col=c;p|=SCE_CTRL_CROSS;}else continue;}else continue;}
     if(p&SCE_CTRL_CIRCLE)return GUI_BACK;if(p&SCE_CTRL_START)return GUI_QUIT;
+    if(!masked && p&(SCE_CTRL_LTRIGGER|SCE_CTRL_RTRIGGER)){page=(page+(p&SCE_CTRL_LTRIGGER?3:1))%4;keys=pages[page];row=col=0;}
     if(p&SCE_CTRL_UP)row=(row+5)%6;if(p&SCE_CTRL_DOWN)row=(row+1)%6;
-    int len=(int)strlen(keys[row]);if(col>=len)col=len-1;
+    int len=(int)text_count(keys[row]);if(col>=len)col=len-1;
     if(p&SCE_CTRL_LEFT)col=(col+len-1)%len;if(p&SCE_CTRL_RIGHT)col=(col+1)%len;
-    unsigned n=(unsigned)strlen(buffer);
-    if(p&SCE_CTRL_SQUARE && n)buffer[--n]=0;
-    if(p&SCE_CTRL_CROSS && n+1<size){buffer[n++]=keys[row][col];buffer[n]=0;}
+    if(p&SCE_CTRL_SQUARE)text_delete(buffer);
+    if(p&SCE_CTRL_CROSS)text_append(buffer,size,text_at(keys[row],(unsigned)col));
     if(p&SCE_CTRL_TRIANGLE){snprintf(value,size,"%s",buffer);return 0;}
   }
 #else
@@ -477,21 +492,24 @@ int gui_details(const browse_item_t *it,const char *server,const char *token,con
   int dirty=1;
   for(;;) {
     if(dirty) {
-      shell(it->parent_title[0]?it->parent_title:kind(it),"DETAILS",-1);
+      shell(it->parent_title[0]?it->parent_title:kind(it),"DETAILS",-2);
       rect(214,132,184,260,TILE);if(img)poster(img,214,132,184,260);
       text(it->title,422,120,2,WHITE,492);
       char meta[160];snprintf(meta,sizeof(meta),"%s   %s   %u min",it->year,it->content_rating,it->duration/60000);
       if(!strcmp(it->type,"episode"))snprintf(meta,sizeof(meta),"Season %d   Episode %d   %u min",it->parent_index,it->index,it->duration/60000);
+      if(!strcmp(it->type,"track"))snprintf(meta,sizeof(meta),"%s   Track %d   %u:%02u",it->year,it->index,it->duration/60000,(it->duration/1000)%60);
       text(meta,422,173,0,GOLD,488);wrap(it->summary[0]?it->summary:"No description provided by the server.",422,212,482,6);
       const char *labels[]={can_resume?"Resume":"Play","Play from beginning","Back"};int count=can_resume?3:2;
       for(int i=0;i<count;i++) {
         const char *label=can_resume?labels[i]:i==0?"Play":"Back";
         rect(214+i*230,432,210,44,choice==i?GOLD:TILE);text(label,228+i*230,440,1,choice==i?BLACK:WHITE,190);
       }
-      text(notice && *notice?notice:"X Select   Square Options   Left/Right Move   O Back",214,498,0,GREY,702);present();dirty=0;
+      if(notice && *notice)text(notice,214,482,0,GOLD,702);text("Back",228,514,0,GREY,300);text("Options / tracks",600,514,0,GREY,315);present();dirty=0;
     }
 #ifdef __vita__
     unsigned p=input_read(&in);if(!p)continue;dirty=1;
+    if(p&TOUCH_EVENT){int x=in.touch.x,y=in.touch.y;if(y>=432 && y<476 && x>=214){int selected=(x-214)/230,count=can_resume?3:2;if(selected<count && (x-214)%230<210){choice=selected;p|=SCE_CTRL_CROSS;}else continue;}
+      else if(y>=510){if(x<550)p|=SCE_CTRL_CIRCLE;else p|=SCE_CTRL_SQUARE;}else continue;}
     if(p&SCE_CTRL_CIRCLE)break;if(p&SCE_CTRL_START){result=GUI_QUIT;break;}
     if(p&SCE_CTRL_SQUARE){result=3;break;}
     int count=can_resume?3:2;
@@ -511,7 +529,7 @@ void gui_player_overlay(unsigned *buffer,const char *title,unsigned pos,unsigned
   rect(24,H-48,(int)progress,3,GOLD);
   char time[100];snprintf(time,sizeof(time),"%s  %u:%02u / %u:%02u",paused?"Paused":"Playing",pos/60000,(pos/1000)%60,duration/60000,(duration/1000)%60);
   text(message && *message?message:time,24,H-78,0,GOLD,890);
-  text("X Pause/Resume   O Stop   Left/Right Seek 10s   Triangle Controls",24,H-33,0,WHITE,910);
+  text("Pause / Resume",24,H-33,0,WHITE,205);text("Stop",264,H-33,0,WHITE,140);text("-10 sec",444,H-33,0,WHITE,160);text("+10 sec",634,H-33,0,WHITE,160);text("Controls",824,H-33,0,WHITE,120);
   fb=saved;
 }
 int gui_snapshot(const char *path) {
@@ -519,4 +537,21 @@ int gui_snapshot(const char *path) {
   fprintf(f,"P6\n960 544\n255\n");unsigned *pixels=buffers[draw_buffer^1];
   for(int i=0;i<W*H;i++){unsigned char rgb[3]={pixels[i]&255,(pixels[i]>>8)&255,(pixels[i]>>16)&255};fwrite(rgb,1,3,f);}
   return fclose(f);
+}
+
+int gui_photo(const char *title,const char *path){FILE *file=fopen(path,"rb");if(!file)return -3;if(fseek(file,0,SEEK_END)){fclose(file);return -3;}long bytes=ftell(file);rewind(file);if(bytes<=0 || bytes>512*1024){fclose(file);return -3;}unsigned char *data=malloc((size_t)bytes),*image=NULL;int w=0,h=0,channels;
+ if(data && fread(data,1,(size_t)bytes,file)==(size_t)bytes && stbi_info_from_memory(data,(int)bytes,&w,&h,&channels) && w>0 && h>0 && w<=2048 && h<=2048)image=stbi_load_from_memory(data,(int)bytes,&w,&h,&channels,3);fclose(file);free(data);if(!image)return -3;
+ int controls=1,dirty=1,result=GUI_BACK;
+#ifdef __vita__
+ input_t input;input_init(&input);
+#endif
+ for(;;){if(dirty){rect(0,0,W,H,BLACK);int max_h=controls?H-112:H,dw=W,dh=(int)((long long)W*h/w);if(dh>max_h){dh=max_h;dw=(int)((long long)max_h*w/h);}if(dw<1)dw=1;if(dh<1)dh=1;int left=(W-dw)/2,top=(H-dh)/2;
+  for(int y=0;y<dh;y++)for(int x=0;x<dw;x++){const unsigned char *pixel=image+((y*h/dh)*w+x*w/dw)*3;fb[(top+y)*W+left+x]=pixel[0]|(pixel[1]<<8)|(pixel[2]<<16)|0xFF000000u;}
+  if(controls){rect(0,0,W,64,PANEL);text(title,24,16,1,WHITE,912);rect(0,H-48,W,48,PANEL);rect(0,H-48,220,48,TILE);text("Back",24,H-35,0,GREY,190);text("Hide controls / Triangle",264,H-35,0,GREY,660);}present();dirty=0;}
+#ifdef __vita__
+  unsigned pressed=input_read(&input);if(pressed&SCE_CTRL_START){result=GUI_QUIT;break;}if(pressed&SCE_CTRL_CIRCLE)break;if(pressed&TOUCH_EVENT){if(controls && input.touch.y>=H-48 && input.touch.x<220)break;controls=!controls;dirty=1;}if(pressed&SCE_CTRL_TRIANGLE){controls=!controls;dirty=1;}
+#else
+  break;
+#endif
+ }stbi_image_free(image);return result;
 }

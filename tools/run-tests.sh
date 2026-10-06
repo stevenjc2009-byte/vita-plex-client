@@ -11,17 +11,26 @@ compiler=${CC:-cc}
 (cd "$scratch" && ./regression)
 "$compiler" -std=c11 -Wall -Wextra -Werror -Wno-misleading-indentation -Isrc tools/library_scan_test.c src/library.c src/browse.c src/plex_auth.c -o "$scratch/library"
 "$scratch/library"
-for header in audioout.h avplayer.h ctrl.h display.h kernel/sysmem.h io/fcntl.h kernel/threadmgr.h kernel/processmgr.h sysmodule.h types.h; do
+"$compiler" -std=c11 -Wall -Wextra -Werror -Isrc tools/text_test.c src/text.c -o "$scratch/text"
+"$scratch/text"
+"$compiler" -std=c11 -Wall -Wextra -Werror -Isrc tools/touch_test.c src/touch.c -o "$scratch/touch"
+"$scratch/touch"
+for header in audioout.h avplayer.h ctrl.h display.h kernel/sysmem.h io/fcntl.h io/stat.h kernel/threadmgr.h kernel/processmgr.h sysmodule.h types.h; do
  mkdir -p "$scratch/include/psp2/$(dirname "$header")"
  printf '#include <psp2/mock.h>\n' > "$scratch/include/psp2/$header"
 done
-"$compiler" -std=c11 -Wall -Wextra -Werror -Wno-misleading-indentation -D__vita__ -DPLEX_MOCK_VITA -Dmemalign=mock_memalign -I"$scratch/include" -Itools/mock-vita -Isrc tools/player_lifecycle_test.c src/player.c src/video.c -o "$scratch/player"
+"$compiler" -std=c11 -Wall -Wextra -Werror -Wno-misleading-indentation -pthread -D__vita__ -DPLEX_MOCK_VITA -Dmemalign=mock_memalign -I"$scratch/include" -Itools/mock-vita -Isrc tools/player_lifecycle_test.c src/player.c src/video.c src/touch.c -o "$scratch/player"
 "$scratch/player"
+"$compiler" -std=c11 -Os -Wall -Wextra -Werror -Wno-misleading-indentation -Wno-unused-parameter -pthread -D__vita__ -DPLEX_MOCK_VITA -DPLEX_TOUCH_EXTERNAL -I"$scratch/include" -Itools/mock-vita -Isrc tools/gui_touch_test.c src/gui.c src/text.c src/touch.c src/plex_auth.c -o "$scratch/gui"
+"$scratch/gui"
 printf '#include <psp2/mock.h>\n' > "$scratch/include/psp2/power.h"
+printf '#include <psp2/mock.h>\n' > "$scratch/include/psp2/kernel/cpu.h"
 "$compiler" -std=c11 -O2 -Wall -Wextra -Werror -Wno-misleading-indentation -D__vita__ -pthread -I"$scratch/include" -Itools/mock-vita -Isrc tools/parallel_video_test.c src/video.c src/performance.c -o "$scratch/cores"
+"$compiler" -std=c11 -O2 -Wall -Wextra -Werror -Wno-misleading-indentation -D__vita__ -pthread -I"$scratch/include" -Itools/mock-vita -Isrc tools/network_lifecycle_test.c src/network.c src/video.c src/performance.c -o "$scratch/network"
+"$scratch/network"
 "$scratch/cores"
 "$compiler" -std=c11 -O2 -Wall -Wextra -Werror -Wno-misleading-indentation -D__vita__ -DPLEX_TEST_JOURNAL -pthread -I"$scratch/include" -Itools/mock-vita -Isrc tools/progress_recovery_test.c src/progress.c src/video.c src/performance.c src/plex_auth.c -o "$scratch/progress"
-(cd "$scratch" && ./progress && ./progress recover)
+(cd "$scratch" && ./progress && ./progress recover && ./progress legacy)
 for header in kernel/sysmem.h io/fcntl.h net/net.h net/netctl.h net/http.h libssl.h sysmodule.h kernel/threadmgr.h kernel/processmgr.h; do
  mkdir -p "$scratch/include/psp2/$(dirname "$header")"
  printf '#include <psp2/http_mock.h>\n' > "$scratch/include/psp2/$header"

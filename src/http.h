@@ -24,3 +24,5 @@ void http_cancel(void);
 void http_shutdown(void);
 
 int http_put(const char *url,const char *client,char *body,unsigned cap);
+
+const char *http_init_stage(void);

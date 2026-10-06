@@ -25,3 +25,7 @@ int sceHttpSendRequest(int,const void*,unsigned);int sceHttpsGetSslError(int,int
 int sceHttpDeleteRequest(int);int sceHttpDeleteConnection(int);int sceHttpDeleteTemplate(int);int sceHttpAbortRequest(int);
 int sceHttpSetAutoRedirect(int,int);int sceHttpGetResponseContentLength(int,unsigned long long*);
 int sceIoClose(int);int sceIoRemove(const char*);
+
+#define SCE_HTTP_ERROR_ALREADY_INITED ((int)0x80431020)
+#define SCE_SSL_ERROR_ALREADY_INITED ((int)0x80435020)
+int sceSysmoduleIsLoaded(int);

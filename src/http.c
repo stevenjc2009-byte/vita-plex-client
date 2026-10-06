@@ -18,7 +18,9 @@
 #include <psp2/kernel/processmgr.h>
 static SceUID net_memid = -1;
 static int inited = 0,net_ready,ctl_ready,http_ready,ssl_ready;
-static unsigned modules;
+static unsigned modules;static int tls_failure;
+static const char *init_stage="network initialization";
+const char *http_init_stage(void){return init_stage;}
 static SceUID request_lock=-1;
 static int active_request=-1;
 static volatile int cancelled;
@@ -47,36 +49,35 @@ int http_last_error(void) { return last_error; }
 int http_last_ssl_err(void) { return last_ssl_err; }
 unsigned http_last_ssl_detail(void) { return last_ssl_detail; }
 
+static int load_module(int id,unsigned bit){if(sceSysmoduleIsLoaded(id)==0)return 0;int result=sceSysmoduleLoadModule(id);if(result>=0)modules|=bit;return result;}
 int http_init(void) {
   if (inited) return 0;
   int r;
-  request_lock=sceKernelCreateMutex("plex_http_request",0,0,NULL);if(request_lock<0)return request_lock;
-  r = sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
-  if (r < 0) goto fail;modules|=1;
-  r = sceSysmoduleLoadModule(SCE_SYSMODULE_HTTP);
-  if (r < 0) goto fail;modules|=2;
-  r = sceSysmoduleLoadModule(SCE_SYSMODULE_SSL);
-  if (r < 0) goto fail;modules|=4;
-  r = sceSysmoduleLoadModule(SCE_SYSMODULE_HTTPS);
-  if (r < 0) goto fail;modules|=8;
+  init_stage="HTTP mutex";request_lock=sceKernelCreateMutex("plex_http_request",0,0,NULL);if(request_lock<0)return request_lock;
+  init_stage="NET module";r = load_module(SCE_SYSMODULE_NET,1);
+  if (r < 0) goto fail;
+  init_stage="HTTP module";r = load_module(SCE_SYSMODULE_HTTP,2);
+  if (r < 0) goto fail;
 
   // Net stack memory must come from its own memblock (not .bss).
   SceNetInitParam p;
   p.size = 2 * 1024 * 1024;
   p.flags = 0;
-  net_memid = sceKernelAllocMemBlock("SceNetMemory", 0x0C20D060,
+  init_stage="network memory";net_memid = sceKernelAllocMemBlock("SceNetMemory", 0x0C20D060,
     p.size, NULL);
   if (net_memid < 0){r=net_memid;goto fail;}
   if ((r=sceKernelGetMemBlockBase(net_memid, &p.memory)) < 0)goto fail;
 
-  r = sceNetInit(&p);
+  init_stage="network stack";r = sceNetInit(&p);
   if (r < 0) goto fail;net_ready=1;
-  r = sceNetCtlInit();
+  init_stage="Wi-Fi control";r = sceNetCtlInit();
   if (r < 0) goto fail;ctl_ready=1;
-  r = sceHttpInit(2 * 1024 * 1024);
-  if (r < 0) goto fail;http_ready=1;
-  r = sceSslInit(1 * 1024 * 1024);
-  if (r < 0) goto fail;ssl_ready=1;
+  init_stage="HTTP library";r = sceHttpInit(2 * 1024 * 1024);
+  if (r < 0 && r!=(int)SCE_HTTP_ERROR_ALREADY_INITED)goto fail;http_ready=r>=0;
+  init_stage="SSL module";r=load_module(SCE_SYSMODULE_SSL,4);if(r<0)goto tls_fail;
+  init_stage="HTTPS module";r=load_module(SCE_SYSMODULE_HTTPS,8);if(r<0)goto tls_fail;
+  init_stage="TLS library";r = sceSslInit(1 * 1024 * 1024);
+  if (r < 0 && r!=(int)SCE_SSL_ERROR_ALREADY_INITED)goto tls_fail;ssl_ready=r>=0;
 
   // NOTE: no sceHttpsDisableOption — plex.tv keeps full cert/CN/CA
   // verification against the Vita CA store. LAN Plex traffic is
@@ -97,11 +98,15 @@ int http_init(void) {
     ca1.size = plex_ca_int_len;
     ca_list[0] = &ca0;
     ca_list[1] = &ca1;
-    r=sceHttpsLoadCert(2, ca_list, NULL, NULL);if(r<0)goto fail;
+    init_stage="TLS certificates";r=sceHttpsLoadCert(2, ca_list, NULL, NULL);if(r<0)goto tls_fail;
   }
 
-  inited = 1;
-  return 0;
+  tls_failure=0;inited=1;return 0;
+tls_fail:
+  // A LAN HTTP server remains usable even if optional HTTPS setup fails.
+  tls_failure=r;if(ssl_ready){sceSslTerm();ssl_ready=0;}
+  if(modules&8){sceSysmoduleUnloadModule(SCE_SYSMODULE_HTTPS);modules&=~8u;}if(modules&4){sceSysmoduleUnloadModule(SCE_SYSMODULE_SSL);modules&=~4u;}
+  inited=1;return 0;
 fail:
   http_shutdown();return r;
 }
@@ -130,6 +135,7 @@ static int run(const char *url, const char *client_id, const char *accept,
   last_error = 0;
   last_ssl_err = 0;
   last_ssl_detail = 0;
+  if(!strncmp(url,"https://",8) && tls_failure){last_error=tls_failure;return -1;}
   if (!body || !body_len) { last_error = -1; return -1; }
 
   tmpl = sceHttpCreateTemplate("PlexVita/1.0", SCE_HTTP_VERSION_1_1, SCE_TRUE);
@@ -208,6 +214,7 @@ static int download(const char *url, const char *path,
   last_status = last_error = last_ssl_err = 0;
   last_ssl_detail = 0;
 
+  if(!strncmp(url,"https://",8) && tls_failure){last_error=tls_failure;return -1;}
   tmpl = sceHttpCreateTemplate("PlexVita/1.0", SCE_HTTP_VERSION_1_1, SCE_TRUE);
   if (tmpl < 0) { last_error = tmpl; goto out; }
   conn = sceHttpCreateConnectionWithURL(tmpl, url, SCE_TRUE);
@@ -273,6 +280,7 @@ int http_download_art(const char *url,const char *path,volatile int *cancel) {
 int http_put(const char*u,const char*c,char*b,unsigned n){(void)u;(void)c;(void)b;(void)n;return -1;}
 void http_prepare(unsigned s){(void)s;}void http_cancel(void){}void http_shutdown(void){}
 // Host stubs (self-test never performs network I/O).
+const char *http_init_stage(void){return "desktop";}
 int http_init(void) { return 0; }
 int http_post_pins(const char *u, const char *c, char *b, unsigned l) {
   (void)u; (void)c; (void)b; (void)l;

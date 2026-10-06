@@ -12,7 +12,7 @@ foreach($plexHeader in @('audioout.h','avplayer.h','ctrl.h','display.h','kernel/
 Push-Location $plexRoot
 try {
   $plexExe=Join-Path $plexScratch 'player_test.exe'
-  & $Compiler -std=c11 -Wall -Wextra -Werror -Wno-misleading-indentation -D__vita__ -DPLEX_MOCK_VITA -Dmemalign=mock_memalign "-I$plexMock" -Itools/mock-vita -Isrc tools/player_lifecycle_test.c src/player.c src/video.c -o $plexExe
+  & $Compiler -std=c11 -Wall -Wextra -Werror -Wno-misleading-indentation -pthread -D__vita__ -DPLEX_MOCK_VITA -Dmemalign=mock_memalign "-I$plexMock" -Itools/mock-vita -Isrc tools/player_lifecycle_test.c src/player.c src/video.c src/touch.c -o $plexExe
   if($LASTEXITCODE){throw 'Player test compilation failed'}
   & $plexExe
   if($LASTEXITCODE){throw 'Player lifecycle tests failed'}

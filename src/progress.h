@@ -5,3 +5,8 @@ void progress_update(unsigned position,int state);
 int progress_finish(unsigned position);
 int progress_retry(const settings_t *settings);
 int progress_pending(void);
+
+int progress_pending_for(const settings_t *settings);
+// others=1 discards only records outside this server/client; 0 discards all.
+int progress_discard(const settings_t *settings,int others);
+int progress_durable(void);

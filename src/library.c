@@ -7,7 +7,7 @@
 #include <string.h>
 static int request(const settings_t *st,const char *url,char *body,unsigned size,char *notice,unsigned cap){
  int result=network_get(url,st->client_id,"text/xml",body,size,15);
- if(result)snprintf(notice,cap,network_cancelled()?"Request cancelled.":"Library request failed (HTTP %d / error 0x%X).",http_last_status(),http_last_error());return result;
+ if(result)snprintf(notice,cap,network_cancelled()?"Request cancelled.":"Library request failed (HTTP %d / error 0x%X).",network_last_status(),network_last_error());return result;
 }
 int library_scan(settings_t *st,const char *section,char *body,unsigned body_size,char *notice,unsigned cap) {
   char url[4096];

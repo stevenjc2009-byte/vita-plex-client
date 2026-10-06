@@ -202,3 +202,5 @@ void plex_build_timeline_url(const char *server, const char *token, const char *
   snprintf(out, cap, "%s/:/timeline?ratingKey=%s&state=%s&X-Plex-Token=%s", server, rating_key,
     state == 1 ? "playing" : state == 2 ? "paused" : "stopped", tok);
 }
+
+int plex_first_part_key(const char *xml,char *out,unsigned cap){const char *p=strstr(xml,"<Part ");if(!p)return -1;const char *end=tag_end(p);if(!end || plex_xml_attr(p,end,"key",out,cap) || strncmp(out,"/library/parts/",15))return -1;return 0;}
