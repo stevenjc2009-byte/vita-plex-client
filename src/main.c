@@ -201,8 +201,14 @@ int main(void) {
   memset(&old, 0, sizeof(old));
 
   // Auto-update check, once per launch. Skipped silently when offline.
+  // Paint first: the check blocks on the network, and with dirty-flag
+  // rendering nothing else would appear until it returns (looks frozen).
   {
     char dl[512], tag[32];
+    DBG_CLEAR();
+    ui_bar("Starting");
+    ui_blank();
+    ui_center("Checking for updates...");
     int up = update_check(dl, sizeof(dl), tag, sizeof(tag));
     if (up > 0) {
       int choice = -1;
@@ -450,7 +456,9 @@ int main(void) {
         ui_center("[ X ]  I entered the code      [ O ]  New code");
       }
       ui_status(status);
-      ui_footer("START quits");
+      char ver[64];
+      snprintf(ver, sizeof(ver), "v%s   START quits", APP_VERSION);
+      ui_footer(ver);
     } else if (s == S_SECTIONS) {
       if (need_fetch) pending = ACT_FETCH_SEC;
       ui_bar("Libraries");
