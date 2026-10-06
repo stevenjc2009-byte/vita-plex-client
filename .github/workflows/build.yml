@@ -1,0 +1,25 @@
+name: build-vpk
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: vitasdk/vitasdk:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_TOOLCHAIN_FILE=${VITASDK}/share/vita.toolchain.cmake
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Release VPK
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/*.vpk
