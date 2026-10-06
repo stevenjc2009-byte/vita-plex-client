@@ -14,3 +14,6 @@ int http_download(const char *url, const char *path,
 int http_last_status(void);
 // Last SceHttp error from run() (0 = none). For UI diagnostics.
 int http_last_error(void);
+// Detail from sceHttpsGetSslError (0 = none). For UI diagnostics.
+int http_last_ssl_err(void);
+unsigned http_last_ssl_detail(void);

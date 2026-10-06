@@ -20,9 +20,13 @@ static int inited = 0;
 // so failures are diagnosable instead of a bare "network error".
 static int last_status = 0;
 static int last_error = 0;
+static int last_ssl_err = 0;
+static unsigned last_ssl_detail = 0;
 
 int http_last_status(void) { return last_status; }
 int http_last_error(void) { return last_error; }
+int http_last_ssl_err(void) { return last_ssl_err; }
+unsigned http_last_ssl_detail(void) { return last_ssl_detail; }
 
 int http_init(void) {
   if (inited) return 0;
@@ -57,6 +61,24 @@ int http_init(void) {
   // NOTE: no sceHttpsDisableOption — plex.tv keeps full cert/CN/CA
   // verification against the Vita CA store. LAN Plex traffic is
   // plain HTTP and never touches TLS.
+
+  // plex.tv serves its leaf cert with no intermediate, which the Vita
+  // cannot chain on its own: trust the DigiCert G2 pair explicitly.
+  {
+    extern const unsigned char plex_ca_root[];
+    extern const unsigned int plex_ca_root_len;
+    extern const unsigned char plex_ca_int[];
+    extern const unsigned int plex_ca_int_len;
+    static SceHttpsData ca0, ca1;
+    static const SceHttpsData *ca_list[2];
+    ca0.ptr = (char *)plex_ca_root;
+    ca0.size = plex_ca_root_len;
+    ca1.ptr = (char *)plex_ca_int;
+    ca1.size = plex_ca_int_len;
+    ca_list[0] = &ca0;
+    ca_list[1] = &ca1;
+    sceHttpsLoadCert(2, ca_list, NULL, NULL);
+  }
 
   inited = 1;
   return 0;
@@ -99,7 +121,13 @@ static int run(const char *url, const char *client_id, const char *accept,
   sceHttpSetRecvTimeOut(req, 15 * 1000 * 1000);
 
   r = sceHttpSendRequest(req, NULL, 0);
-  if (r < 0) { last_error = r; goto out; }
+  if (r < 0) {
+    last_error = r;
+    last_ssl_err = 0;
+    last_ssl_detail = 0;
+    sceHttpsGetSslError(req, &last_ssl_err, &last_ssl_detail);
+    goto out;
+  }
 
   int status = 0;
   r = sceHttpGetStatusCode(req, &status);
@@ -203,5 +231,7 @@ int http_download(const char *u, const char *p,
 }
 int http_last_status(void) { return 0; }
 int http_last_error(void) { return 0; }
+int http_last_ssl_err(void) { return 0; }
+unsigned http_last_ssl_detail(void) { return 0; }
 
 #endif

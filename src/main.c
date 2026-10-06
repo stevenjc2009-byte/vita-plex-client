@@ -247,8 +247,9 @@ int main(void) {
             "Code ready - enter it at plex.tv/link, then press X");
         } else {
           snprintf(status, sizeof(status),
-            "plex.tv unreachable (HTTP %d err 0x%X) - tell me both numbers",
-            http_last_status(), http_last_error());
+            "plex.tv fail HTTP %d err 0x%X ssl 0x%X/0x%X - tell me all 4",
+            http_last_status(), http_last_error(),
+            http_last_ssl_err(), http_last_ssl_detail());
         }
         break;
       case ACT_PIN_POLL:
