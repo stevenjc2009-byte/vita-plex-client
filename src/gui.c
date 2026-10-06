@@ -69,6 +69,28 @@ static void gui_log(const char *fmt, ...) {
 static SceUID g_fbid = -1;
 static unsigned int *g_fb = NULL;
 
+// Boot-time framebuffer grab: CDRAM fragments as net/ssl/player blocks
+// come and go, so claim our 2MB while the heap is pristine. Failure
+// here (logged) beats a silent kick-back at library-entry time.
+void gui_fb_early(void) {
+  if (g_fb) return;
+  g_fbid = sceKernelAllocMemBlock("plex_gui",
+    SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
+    FB_W * FB_H * sizeof(*g_fb), NULL);
+  if (g_fbid >= 0) {
+    if (sceKernelGetMemBlockBase(g_fbid, (void **)&g_fb) < 0) {
+      gui_log("gui fb base FAIL block=0x%X", g_fbid);
+      sceKernelFreeMemBlock(g_fbid);
+      g_fbid = -1;
+      g_fb = NULL;
+    } else {
+      gui_log("gui fb early block=0x%X base=%p", g_fbid, g_fb);
+    }
+  } else {
+    gui_log("gui fb early ALLOC FAIL block=0x%X", g_fbid);
+  }
+}
+
 static void present(void) {
   SceDisplayFrameBuf fb;
   memset(&fb, 0, sizeof(fb));
@@ -209,12 +231,11 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
     // Scanout needs CDRAM (physically contiguous): malloc'd heap
     // shows as a white screen (v01.24 photo). Same recipe debugScreen
     // itself uses. ~2MB fits; 16MB GXM blocks did NOT (01.08-16).
-    g_fbid = sceKernelAllocMemBlock("plex_gui",
-      SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
-      FB_W * FB_H * sizeof(*g_fb), NULL);
-    if (g_fbid >= 0)
-      sceKernelGetMemBlockBase(g_fbid, (void **)&g_fb);
-    gui_log("gui fb block=0x%X base=%p", g_fbid, g_fb);
+    // Lazy fallback if the boot-time grab never ran; a NULL here
+    // returns -1 and main.c prints the reason (v01.25: silent -1
+    // looked like a "kick back" to the Libraries screen).
+    gui_fb_early();
+    gui_log("gui fb lazy block=0x%X base=%p", g_fbid, g_fb);
     if (!g_fb) return -1;
   }
   sceIoMkdir("ux0:data/plex-client/art", 0777);

@@ -4,6 +4,9 @@
 // Host builds get a stub.
 #include "browse.h"
 
+// Claims the poster's CDRAM framebuffer at boot (see gui.c).
+void gui_fb_early(void);
+
 // Blocking grid browser. Downloads missing thumbs over LAN HTTP into
 // ux0:data/plex-client/art/. Returns selected index, -1 for back,
 // -2 when the user pressed START (quit the app).

@@ -247,6 +247,7 @@ int main(void) {
   ui_font_2x();
   log_msg("ui font %dx%d", psvDebugScreenGetFont()->width,
     psvDebugScreenGetFont()->height);
+  gui_fb_early(); // claim poster framebuffer before CDRAM fragments
 
   settings_t st;
   settings_load(&st);
@@ -559,7 +560,8 @@ int main(void) {
         } else {
           s = S_SECTIONS;
           need_fetch = 1;
-          status[0] = 0;
+          snprintf(status, sizeof(status),
+            "Poster screen failed - see debug.log fb line");
         }
         ui_theme(); // grid + player used their own framebuffer
         ui_font_2x();
