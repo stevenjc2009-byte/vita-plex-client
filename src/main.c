@@ -7,6 +7,7 @@
 #ifdef __vita__
 #include <psp2/ctrl.h>
 #include <psp2/kernel/processmgr.h>
+#include <psp2/kernel/sysmem.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/io/stat.h>
 #include <psp2/ime_dialog.h>
@@ -115,13 +116,17 @@ static int ime_prompt_token(char *out, unsigned out_len) {
   p.maxTextLength = 64;
   p.initialText = buf;
   p.inputTextBuffer = buf;
+  DBG_CLEAR();
+  ui_bar("Sign in");
+  ui_blank();
+  ui_center("Opening keyboard...");
   // Common dialogs refuse to run unless libgxm is initialized
-  // (SCE_COMMON_DIALOG_ERROR_GXM_IS_UNINITIALIZED = 0x80020436).
-  // sceGxmInitialize with a NULL display callback fails with
-  // SCE_GXM_ERROR_DRIVER (0x805B0017), so pass the same params as the
-  // official vitasdk ime sample: real callback + 16MB parameter buffer.
-  // The callback only fires on display-queue swaps, which we never do,
-  // so our debugScreen framebuffer stays up throughout.
+  // (SCE_COMMON_DIALOG_ERROR_GXM_IS_UNINITIALIZED = 0x80020436), and
+  // the dialog framework stalls unless the app keeps presenting frames
+  // while it runs (the official ime sample swaps every frame) - a plain
+  // delay loop here wedges the app with the Vita itself fine. So: init
+  // GXM exactly like the sample, swap a black buffer under the keyboard
+  // overlay while it runs, then tear down and reclaim our framebuffer.
   static void *gxm_cb_data = NULL;
   SceGxmInitializeParams gp;
   memset(&gp, 0, sizeof(gp));
@@ -134,28 +139,74 @@ static int ime_prompt_token(char *out, unsigned out_len) {
     snprintf(out, out_len, "GXMINIT:0x%X", gr);
     return -2;
   }
-  int r = sceImeDialogInit(&p);
+  // Two display buffers in CDRAM with sync objects, per the sample.
+  static void *dbase[2] = { NULL, NULL };
+  static SceUID dblk[2] = { 0, 0 };
+  static SceGxmColorSurface dsurf[2];
+  static SceGxmSyncObject *dsync[2] = { NULL, NULL };
+  int back = 0, front = 0, ok = -1, i, r;
+  for (i = 0; i < 2; i++) {
+    dblk[i] = sceKernelAllocMemBlock("gxm_disp",
+      SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, 4 * 1024 * 544, NULL);
+    if (dblk[i] < 0) break;
+    sceKernelGetMemBlockBase(dblk[i], &dbase[i]);
+    sceGxmMapMemory(dbase[i], 4 * 1024 * 544,
+      SCE_GXM_MEMORY_ATTRIB_READ | SCE_GXM_MEMORY_ATTRIB_WRITE);
+    memset(dbase[i], 0, 4 * 1024 * 544);
+    sceGxmColorSurfaceInit(&dsurf[i], SCE_GXM_COLOR_FORMAT_A8B8G8R8,
+      SCE_GXM_COLOR_SURFACE_LINEAR, SCE_GXM_COLOR_SURFACE_SCALE_NONE,
+      SCE_GXM_OUTPUT_REGISTER_SIZE_32BIT, 960, 544, 1024, dbase[i]);
+    if (sceGxmSyncObjectCreate(&dsync[i]) < 0) { dsync[i] = NULL; break; }
+  }
+  if (i < 2) {
+    snprintf(out, out_len, "GXMDISP:0x%X",
+      dblk[i] < 0 ? dblk[i] : -1);
+    goto ime_cleanup;
+  }
+  r = sceImeDialogInit(&p);
   if (r < 0) {
-    sceGxmTerminate();
     snprintf(out, out_len, "IMEINIT:0x%X", r);
-    return -2; // caller shows the code instead of "cancelled"
+    goto ime_cleanup;
   }
-  while (sceImeDialogGetStatus() == SCE_COMMON_DIALOG_STATUS_RUNNING)
-    sceKernelDelayThread(50000);
-  SceImeDialogResult res;
-  memset(&res, 0, sizeof(res));
-  int ok = -1;
-  if (sceImeDialogGetResult(&res) == 0 &&
-      res.button == SCE_IME_DIALOG_BUTTON_ENTER) {
-    unsigned i = 0;
-    while (i + 1 < out_len && buf[i] && i < 64 &&
-        buf[i] >= 0x20 && buf[i] < 0x7F)
-      { out[i] = (char)buf[i]; i++; }
-    out[i] = 0;
-    if (i) ok = 0;
+  // Present frames until the dialog finishes. Bounded so a stuck dialog
+  // can never wedge the app again: 3600 swaps at ~33ms is about 2 min.
+  i = 0;
+  while (sceImeDialogGetStatus() == SCE_COMMON_DIALOG_STATUS_RUNNING &&
+      i++ < 3600) {
+    sceGxmPadHeartbeat(&dsurf[back], dsync[back]);
+    gxm_cb_data = dbase[back];
+    sceGxmDisplayQueueAddEntry(dsync[front], dsync[back], &gxm_cb_data);
+    front = back;
+    back = (back + 1) % 2;
+    sceKernelDelayThread(33000);
   }
-  sceImeDialogTerm();
-  sceGxmTerminate(); // free the param buffer, back to plain framebuffer
+  if (i >= 3600) {
+    snprintf(out, out_len, "IME stuck - gave up after 2 min");
+    sceImeDialogTerm();
+    goto ime_cleanup;
+  }
+  {
+    SceImeDialogResult res;
+    memset(&res, 0, sizeof(res));
+    if (sceImeDialogGetResult(&res) == 0 &&
+        res.button == SCE_IME_DIALOG_BUTTON_ENTER) {
+      unsigned k = 0;
+      while (k + 1 < out_len && buf[k] && k < 64 &&
+          buf[k] >= 0x20 && buf[k] < 0x7F)
+        { out[k] = (char)buf[k]; k++; }
+      out[k] = 0;
+      if (k) ok = 0;
+    }
+    sceImeDialogTerm();
+  }
+ime_cleanup:
+  sceGxmTerminate();
+  for (i = 0; i < 2; i++) {
+    if (dsync[i]) { sceGxmSyncObjectDestroy(dsync[i]); dsync[i] = NULL; }
+    if (dblk[i] > 0) { sceKernelFreeMemBlock(dblk[i]); dblk[i] = -1; }
+    dbase[i] = NULL;
+  }
+  DBG_INIT(); // reclaim our text framebuffer after GXM teardown
   return ok;
 }
 #endif
