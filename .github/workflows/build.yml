@@ -16,6 +16,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check sce_sys PNG format (must be 8-bit palette)
+        run: |
+          python3 -c "
+          import struct, sys
+          bad = False
+          for f in ['sce_sys/icon0.png','sce_sys/livearea/contents/startup.png','sce_sys/livearea/contents/bg.png']:
+              d = open(f,'rb').read()
+              w,h,bd,ct = struct.unpack('>IIBB',d[16:26])
+              ok = (bd,ct) == (8,3)
+              print(f, 'depth', bd, 'type', ct, 'OK' if ok else 'REJECT')
+              bad = bad or not ok
+          sys.exit(1 if bad else 0)
+          "
+
       - name: Configure
         run: cmake -B build -DCMAKE_TOOLCHAIN_FILE=${VITASDK}/share/vita.toolchain.cmake
 
