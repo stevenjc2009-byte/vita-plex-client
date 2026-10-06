@@ -1,15 +1,12 @@
 #pragma once
-// SceAvPlayer HLS playback with real video + audio output.
-// player_play_hls() starts the stream; player_run_blocking() waits up
-// to 15s for it to go active, pumps video frames to the screen and
-// audio to the speakers until X is pressed or the stream ends, then
-// restores the text UI. Returns 0 after playback, <0 when nothing
-// played (-1 no handle, -2 fb alloc fail, -3 never active, -4 cancel).
-// Vita-only implementation in player.c; host builds see stubs.
-
+// 0 stop/end, 1 exit, 2 restart at absolute seek position, negative error.
 int player_play_hls(const char *hls_url);
 int player_active(void);
 int player_run_blocking(void);
 void player_stop(void);
 int player_run(const char *title, unsigned duration_ms, unsigned base_offset_ms);
 unsigned player_position(void);
+
+unsigned player_seek_position(void);
+int player_completed(void);
+void player_progress_callback(void (*callback)(unsigned position,int state));

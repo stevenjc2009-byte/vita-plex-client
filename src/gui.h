@@ -1,7 +1,7 @@
 #pragma once
 #include "browse.h"
 enum { GUI_BACK=-1, GUI_QUIT=-2, GUI_HOME=-3, GUI_SETTINGS=-4,
-  GUI_REFRESH=-5, GUI_SEARCH=-6, GUI_NEXT=-7, GUI_PREVIOUS=-8, GUI_SORT=-9 };
+  GUI_REFRESH=-5, GUI_SEARCH=-6, GUI_NEXT=-7, GUI_PREVIOUS=-8, GUI_SORT=-9,GUI_VIEWS=-10 };
 typedef struct {
   const char *title, *subtitle, *notice, *server, *token;
   const browse_item_t *items;
@@ -19,3 +19,7 @@ void gui_player_overlay(unsigned int *buffer, const char *title, unsigned positi
 // The desktop preview uses the same renderer as the Vita executable.
 void gui_draw_grid(const gui_view_t *view);
 int gui_snapshot(const char *path);
+
+int gui_wait(volatile int *done,void (*cancel)(void));
+int gui_choice_cursor(const char *title,const char *subtitle,const char **rows,int count,int *cursor);
+int gui_cache_clear(void);

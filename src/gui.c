@@ -2,6 +2,10 @@
 #include "http.h"
 #include "plex_auth.h"
 #include "debugScreen.h"
+#include "performance.h"
+#include <dirent.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -37,7 +41,7 @@
 #define FONT_DIR "assets/"
 #define ART_DIR "build/preview-art/"
 #endif
-typedef struct { unsigned char *data, *widths, *pixels; unsigned w,h; } font_t;
+typedef struct { unsigned char *data, *widths, *pixels; unsigned w,h,count;const unsigned char *codes; } font_t;
 static font_t fonts[3];
 static unsigned *buffers[2], *fb;
 static int draw_buffer;
@@ -55,18 +59,18 @@ static int load_font(font_t *f, int size) {
   FILE *file=fopen(path,"rb"); if(!file) return -1;
   if(fseek(file,0,SEEK_END)) { fclose(file); return -1; }
   long len=ftell(file); rewind(file);
-  if(len<236 || len>1024*1024) { fclose(file); return -1; }
+  if(len<236 || len>4*1024*1024) { fclose(file); return -1; }
   f->data=malloc((size_t)len);
   if(!f->data || fread(f->data,1,(size_t)len,file)!=(size_t)len) {
     free(f->data); f->data=NULL; fclose(file); return -1;
   }
   fclose(file);
   f->w=le16(f->data+4); f->h=le16(f->data+6);
-  if(memcmp(f->data,"PFNT",4) || le16(f->data+8)!=32 || le16(f->data+10)!=224 ||
-    !f->w || !f->h || f->w>64 || f->h>64 || len!=236L+224L*(long)f->w*(long)f->h) {
-    free(f->data); f->data=NULL; return -1;
-  }
-  f->widths=f->data+12; f->pixels=f->data+236; return 0;
+  if(!f->w || !f->h || f->w>64 || f->h>64){free(f->data);f->data=NULL;return -1;}
+  if(!memcmp(f->data,"PFNT",4) && le16(f->data+8)==32 && le16(f->data+10)==224){f->count=224;f->codes=NULL;f->widths=f->data+12;f->pixels=f->data+236;}
+  else if(!memcmp(f->data,"PFN2",4)){f->count=le16(f->data+8);if(!f->count || f->count>2048 || len<12L+5L*(long)f->count){free(f->data);f->data=NULL;return -1;}f->codes=f->data+12;f->widths=f->data+12+f->count*4;f->pixels=f->widths+f->count;}
+  else {free(f->data);f->data=NULL;return -1;}
+  if(len!=(long)(f->pixels-f->data)+(long)f->count*(long)f->w*(long)f->h){free(f->data);f->data=NULL;return -1;}return 0;
 }
 int gui_init(void) {
   if(buffers[0]) return 0;
@@ -88,7 +92,7 @@ int gui_init(void) {
   return 0;
 }
 static void stop_art(void) {
-  art_stop=1;
+  __atomic_store_n(&art_stop,1,__ATOMIC_RELEASE);
 #ifdef __vita__
   if(art_tid>=0) { sceKernelWaitThreadEnd(art_tid,NULL,NULL); sceKernelDeleteThread(art_tid); art_tid=-1; }
 #endif
@@ -134,16 +138,20 @@ static unsigned next_cp(const char **s) {
     int n=c<0xE0?1:c<0xF0?2:3; c&=(1u<<(6-n))-1;
     for(int i=0;i<n;i++) { if((*p&0xC0)!=0x80) {c='?';break;} c=(c<<6)|(*p++&63); }
   }
-  *s=(const char*)p; return c>=32 && c<256?c:'?';
+  *s=(const char*)p; return c>=32 && c<=0x10FFFF?c:'?';
+}
+static unsigned font_index(const font_t *f,unsigned cp){if(!f->codes)return cp>=32 && cp<256?cp-32:'?'-32;
+ unsigned lo=0,hi=f->count;while(lo<hi){unsigned mid=(lo+hi)/2;const unsigned char *p=f->codes+mid*4;unsigned v=p[0]|(p[1]<<8)|(p[2]<<16)|((unsigned)p[3]<<24);if(v<cp)lo=mid+1;else hi=mid;}
+ if(lo<f->count){const unsigned char *p=f->codes+lo*4;unsigned v=p[0]|(p[1]<<8)|(p[2]<<16)|((unsigned)p[3]<<24);if(v==cp)return lo;}return '?'-32;
 }
 static int width(const char *s,int size) {
   font_t *f=fonts+size; int n=0;
   if(!s || !f->data)return 0;
-  while(*s)n+=f->widths[next_cp(&s)-32]; return n;
+  while(*s)n+=f->widths[font_index(f,next_cp(&s))]; return n;
 }
 static void glyph(unsigned cp,int x,int y,int size,unsigned col) {
   font_t *f=fonts+size; if(!f->data)return;
-  const unsigned char *pixels=f->pixels+(cp-32)*f->w*f->h;
+  const unsigned char *pixels=f->pixels+font_index(f,cp)*f->w*f->h;
   for(unsigned r=0;r<f->h;r++)for(unsigned c=0;c<f->w;c++) {
     int xx=x+(int)c,yy=y+(int)r; unsigned a=pixels[r*f->w+c];
     if(!a || xx<0 || yy<0 || xx>=W || yy>=H)continue;
@@ -156,7 +164,7 @@ static void text(const char *s,int x,int y,int size,unsigned col,int max) {
   if(!s || !fonts[size].data)return;
   int start=x, dots=width("...",size), truncated=width(s,size)>max;
   while(*s) {
-    const char *before=s; unsigned cp=next_cp(&s); unsigned advance=fonts[size].widths[cp-32];
+    const char *before=s; unsigned cp=next_cp(&s); unsigned advance=fonts[size].widths[font_index(fonts+size,cp)];
     if(x-start+(int)advance>(truncated?max-dots:max)) { s=before;break; }
     glyph(cp,x,y,size,col);x+=(int)advance;
   }
@@ -189,8 +197,8 @@ static const char *kind(const browse_item_t *it) {
 static void shell(const char *title,const char *subtitle,int nav) {
   rect(0,0,W,H,BG);rect(0,0,176,H,PANEL);
   text("PLEX",22,17,2,GOLD,140);text("for PlayStation Vita",22,58,0,GREY,144);
-  static const char *links[]={"Libraries","Search","Refresh","Settings"};
-  for(int i=0;i<4;i++) {
+  static const char *links[]={"Home","Libraries","Search","Refresh","Settings"};
+  for(int i=0;i<5;i++) {
     if(nav==i){rect(12,124+i*52,152,42,TILE);rect(12,124+i*52,3,42,GOLD);}
     text(links[i],30,132+i*52,1,nav==i?WHITE:GREY,132);
   }
@@ -233,6 +241,7 @@ static void draw_grid(const gui_view_t *v,int nav) {
       unsigned char *img=__atomic_load_n(art+cell,__ATOMIC_ACQUIRE);
       if(img)poster(img,x,y,PW,PH);
       else {text(kind(it),x+10,y+38,0,GOLD,PW-18);wrap(it->title,x+10,y+64,PW-20,2);}
+      if(it->view_count){rect(x,y,PW,22,PANEL);text("WATCHED",x+8,y+1,0,GOLD,PW-12);}
       if(selected)border(x-3,y-3,PW+6,PH+6,GOLD);
       if(it->view_offset && it->duration) {
         unsigned progress=(unsigned)(((uint64_t)PW*it->view_offset)/it->duration);if(progress>PW)progress=PW;
@@ -260,12 +269,16 @@ static void cache_path(const char *server,const char *thumb,char out[120]) {
   for(const char *p=thumb;*p;p++)hash=(hash^(unsigned char)*p)*16777619u;
   snprintf(out,120,ART_DIR "%08x.jpg",hash);
 }
+#ifdef __vita__
+static void cache_trim(unsigned reserve);
+#endif
 static unsigned char *load_art(const gui_view_t *v,const browse_item_t *it) {
   if(!it->thumb[0] || !v->server || !v->token)return NULL;
   char path[120],url[1800],enc[768],tok[384];cache_path(v->server,it->thumb,path);
   FILE *file=fopen(path,"rb");
 #ifdef __vita__
   if(!file && !art_stop) {
+    cache_trim(512*1024);
     plex_url_encode(it->thumb,enc,sizeof(enc));plex_url_encode(v->token,tok,sizeof(tok));
     snprintf(url,sizeof(url),"%s/photo/:/transcode?width=160&height=240&minSize=1&format=jpeg&url=%s&X-Plex-Token=%s",v->server,enc,tok);
     if(http_download_art(url,path,&art_stop)==0)file=fopen(path,"rb");
@@ -302,7 +315,8 @@ static void start_art(const gui_view_t *v,int page) {
   stop_art();art_stop=0;art_view=*v;art_page=page;
 #ifdef __vita__
   sceIoMkdir("ux0:data/plex-client/art",0777);
-  art_tid=sceKernelCreateThread("plex_art",art_worker,0x10000120,0x10000,0,0,NULL);
+  http_prepare(12);
+  art_tid=performance_thread("plex_art",art_worker,0x10000140,0x10000,0x40000);
   if(art_tid>=0 && sceKernelStartThread(art_tid,0,NULL)<0){sceKernelDeleteThread(art_tid);art_tid=-1;}
 #else
   for(int i=0;i<PAGE && page*PAGE+i<v->n;i++)art[i]=load_art(v,v->items+page*PAGE+i);
@@ -336,9 +350,9 @@ int gui_browse_view(gui_view_t *v) {
     if(p&SCE_CTRL_SQUARE){result=GUI_REFRESH;break;}
     if(p&SCE_CTRL_CIRCLE){if(nav>=0){nav=-1;continue;}result=GUI_BACK;break;}
     if(nav>=0) {
-      if(p&SCE_CTRL_UP && nav>0)nav--;if(p&SCE_CTRL_DOWN && nav<3)nav++;
+      if(p&SCE_CTRL_UP && nav>0)nav--;if(p&SCE_CTRL_DOWN && nav<4)nav++;
       if(p&SCE_CTRL_RIGHT){nav=-1;continue;}
-      if(p&SCE_CTRL_CROSS){int actions[]={GUI_HOME,GUI_SEARCH,GUI_REFRESH,GUI_SETTINGS};result=actions[nav];break;}
+      if(p&SCE_CTRL_CROSS){int actions[]={GUI_VIEWS,GUI_HOME,GUI_SEARCH,GUI_REFRESH,GUI_SETTINGS};result=actions[nav];break;}
       continue;
     }
     if(p&SCE_CTRL_CROSS && v->n){result=v->cursor;break;}
@@ -372,8 +386,8 @@ static void draw_choices(const char *title,const char *subtitle,const char **row
   }
   text("X Select   O Back   START Exit",220,514,0,GREY,680);
 }
-int gui_choice(const char *title,const char *subtitle,const char **rows,int count) {
-  int cursor=0;
+int gui_choice_cursor(const char *title,const char *subtitle,const char **rows,int count,int *selection) {
+  int cursor=selection?*selection:0;if(cursor<0 || cursor>=count)cursor=0;
 #ifdef __vita__
   input_t in;input_init(&in);int dirty=1;
   for(;;) {
@@ -381,12 +395,38 @@ int gui_choice(const char *title,const char *subtitle,const char **rows,int coun
     unsigned p=input_read(&in);if(!p)continue;dirty=1;
     if(p&SCE_CTRL_CIRCLE)return GUI_BACK;if(p&SCE_CTRL_START)return GUI_QUIT;
     if(p&SCE_CTRL_UP && cursor>0)cursor--;if(p&SCE_CTRL_DOWN && cursor+1<count)cursor++;
-    if(p&SCE_CTRL_CROSS && count>0)return cursor;
+    if(p&SCE_CTRL_CROSS && count>0){if(selection)*selection=cursor;return cursor;}
   }
 #else
   draw_choices(title,subtitle,rows,count,cursor);present();return GUI_BACK;
 #endif
 }
+int gui_choice(const char *title,const char *subtitle,const char **rows,int count){return gui_choice_cursor(title,subtitle,rows,count,NULL);}
+int gui_wait(volatile int *done,void (*cancel)(void)) {
+#ifdef __vita__
+ input_t in;input_init(&in);int action=0;
+ while(!__atomic_load_n(done,__ATOMIC_ACQUIRE)){
+  unsigned p=input_read(&in);if(!action && p&(SCE_CTRL_CIRCLE|SCE_CTRL_START)){action=p&SCE_CTRL_START?GUI_QUIT:GUI_BACK;if(cancel)cancel();}
+ }
+ return action;
+#else
+ (void)done;(void)cancel;return 0;
+#endif
+}
+#define CACHE_BUDGET (32u*1024*1024)
+static int cache_file(const char *name){size_t n=strlen(name);return n==12 && !strcmp(name+8,".jpg") && strspn(name,"0123456789abcdef")==8;}
+#ifdef __vita__
+static void cache_trim(unsigned reserve) {
+ for(;;){DIR *dir=opendir(ART_DIR);if(!dir)return;struct dirent *entry;unsigned long long total=0;
+  char oldest[160]={0};time_t oldest_time=0;
+  while((entry=readdir(dir))){if(!cache_file(entry->d_name))continue;char path[160];struct stat info;snprintf(path,sizeof(path),ART_DIR "%.12s",entry->d_name);
+   if(!stat(path,&info)){total+=(unsigned long long)info.st_size;if(!oldest[0] || info.st_mtime<oldest_time){snprintf(oldest,sizeof(oldest),"%s",path);oldest_time=info.st_mtime;}}}
+  closedir(dir);if(total+reserve<=CACHE_BUDGET || !oldest[0] || remove(oldest))return;
+ }
+}
+#endif
+int gui_cache_clear(void){stop_art();DIR *dir=opendir(ART_DIR);if(!dir)return 0;struct dirent *entry;int result=0;
+ while((entry=readdir(dir)))if(cache_file(entry->d_name)){char path[160];snprintf(path,sizeof(path),ART_DIR "%.12s",entry->d_name);if(remove(path))result=-1;}closedir(dir);return result;}
 int gui_keyboard(const char *title,char *value,unsigned size,int masked) {
   static const char *keys[]={"abcdefghijklm","nopqrstuvwxyz","ABCDEFGHIJKLM","NOPQRSTUVWXYZ","0123456789-_.","/:?&=+@!#%() "};
   char buffer[256];if(!size || size>sizeof(buffer))return GUI_BACK;
@@ -424,7 +464,11 @@ int gui_keyboard(const char *title,char *value,unsigned size,int masked) {
 }
 int gui_details(const browse_item_t *it,const char *server,const char *token,const char *notice) {
   gui_view_t v={.server=server,.token=token};art_stop=0;
-  unsigned char *img=load_art(&v,it);
+  unsigned char *img=NULL;
+  (void)v;
+  // Details only use an existing poster; never block controller input for artwork.
+  char art_path[120];cache_path(server,it->thumb,art_path);FILE *cached=fopen(art_path,"rb");
+  if(cached){fclose(cached);img=load_art(&v,it);}
   int choice=0,can_resume=it->view_offset>10000 && it->view_offset+10000<it->duration;
   int result=GUI_BACK;
 #ifdef __vita__
@@ -444,11 +488,12 @@ int gui_details(const browse_item_t *it,const char *server,const char *token,con
         const char *label=can_resume?labels[i]:i==0?"Play":"Back";
         rect(214+i*230,432,210,44,choice==i?GOLD:TILE);text(label,228+i*230,440,1,choice==i?BLACK:WHITE,190);
       }
-      text(notice && *notice?notice:"X Select   Left/Right Move   O Back",214,498,0,GREY,702);present();dirty=0;
+      text(notice && *notice?notice:"X Select   Square Options   Left/Right Move   O Back",214,498,0,GREY,702);present();dirty=0;
     }
 #ifdef __vita__
     unsigned p=input_read(&in);if(!p)continue;dirty=1;
     if(p&SCE_CTRL_CIRCLE)break;if(p&SCE_CTRL_START){result=GUI_QUIT;break;}
+    if(p&SCE_CTRL_SQUARE){result=3;break;}
     int count=can_resume?3:2;
     if(p&SCE_CTRL_LEFT && choice>0)choice--;if(p&SCE_CTRL_RIGHT && choice+1<count)choice++;
     if(p&SCE_CTRL_CROSS){if(choice==count-1)break;result=can_resume && choice==0?1:0;break;}

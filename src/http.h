@@ -18,3 +18,9 @@ int http_last_error(void);
 // Detail from sceHttpsGetSslError (0 = none). For UI diagnostics.
 int http_last_ssl_err(void);
 unsigned http_last_ssl_detail(void);
+
+void http_prepare(unsigned deadline_seconds);
+void http_cancel(void);
+void http_shutdown(void);
+
+int http_put(const char *url,const char *client,char *body,unsigned cap);

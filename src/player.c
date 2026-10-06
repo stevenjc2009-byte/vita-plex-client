@@ -15,6 +15,7 @@
 #include <psp2/kernel/sysmem.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/kernel/threadmgr.h>
+#include <psp2/kernel/processmgr.h>
 #include <psp2/sysmodule.h>
 #include <psp2/types.h>
 #include <stdlib.h>
@@ -23,6 +24,8 @@
 #include <stdarg.h>
 #include <malloc.h>
 #include "gui.h"
+#include "video.h"
+#include "performance.h"
 
 // Own append-log (main.c owns debug.log truncated at boot; we append).
 static SceUID p_log = -1;
@@ -54,7 +57,14 @@ static volatile int stop_flag = 0;
 static volatile int audio_port = -1;
 static SceUID audio_tid = -1;
 static int av_loaded;
-static unsigned final_position;
+static unsigned final_position,seek_position;
+static int valid_position,natural_end;
+static void (*progress_callback)(unsigned,int);
+static unsigned *clean_frame;
+static SceUID second_fb=-1;
+static unsigned *display_frames[2];
+static int display_index;
+static uint64_t conversion_total;static unsigned conversion_count,conversion_max;
 static volatile int paused;
 static volatile int audio_error;
 
@@ -89,57 +99,13 @@ static void player_event(void *arg,int32_t event,int32_t source,void *data) {
 static SceUID fb_block = -1;
 static unsigned int *framebuf = NULL;
 
-static int clamp8(int v) {
-  if (v < 0) return 0;
-  if (v > 255) return 255;
-  return v;
+static int blit_frame(const SceAvPlayerFrameInfo *vf) {
+  static video_job_t job;
+  uint64_t before=sceKernelGetProcessTimeWide();
+  if(video_prepare(&job,vf->pData,vf->details.video.width,vf->details.video.height,vf->details.video.aspectRatio,clean_frame))return -1;
+  video_convert(&job);
+  unsigned elapsed=(unsigned)(sceKernelGetProcessTimeWide()-before);conversion_total+=elapsed;conversion_count++;if(elapsed>conversion_max)conversion_max=elapsed;return 0;
 }
-
-// YVU420 semi-planar (Y plane, then interleaved V,U) -> A8B8G8R8.
-// BT.601 integer math, 2 pixels per loop. Any source size is
-// nearest-neighbor scaled and centered on the 960x544 screen.
-static void blit_yvu420(const unsigned char *p, unsigned w, unsigned h) {
-  if (!p || !w || !h || (w & 1) || (h & 1)) return;
-  // Scale with a single factor; independently clamping width and height
-  // stretched widescreen movies and portrait video.
-  unsigned out_w=FB_W,out_h=(unsigned)((uint64_t)h*FB_W/w);
-  if(out_h>FB_H){out_h=FB_H;out_w=(unsigned)((uint64_t)w*FB_H/h);}
-  out_w&=~1u;out_h&=~1u;if(!out_w || !out_h)return;
-  memset(framebuf,0,FB_W*FB_H*sizeof(*framebuf));
-  unsigned off_x = (FB_W - out_w) / 2;
-  unsigned off_y = (FB_H - out_h) / 2;
-
-  for (unsigned y = 0; y < out_h; y++) {
-    unsigned sy = y * h / out_h;
-    const unsigned char *row_y = p + sy * w;
-    const unsigned char *row_vu = p + w * h + (sy / 2) * w;
-    unsigned int *dst =
-      framebuf + (off_y + y) * FB_W + off_x;
-    for (unsigned x = 0; x < out_w; x += 2) {
-      unsigned sx0 = x * w / out_w;
-      unsigned sx1 = (x + 1) * w / out_w;
-      if (sx1 >= w) sx1 = w - 1;
-      unsigned char v = row_vu[(sx0 / 2) * 2];
-      unsigned char u = row_vu[(sx0 / 2) * 2 + 1];
-      int d = (int)u - 128, e = (int)v - 128;
-      int c0 = (int)row_y[sx0] - 16;
-      int c1 = (int)row_y[sx1] - 16;
-      int r0 = (298 * c0 + 409 * e + 128) >> 8;
-      int g0 = (298 * c0 - 100 * d - 208 * e + 128) >> 8;
-      int b0 = (298 * c0 + 516 * d + 128) >> 8;
-      int r1 = (298 * c1 + 409 * e + 128) >> 8;
-      int g1 = (298 * c1 - 100 * d - 208 * e + 128) >> 8;
-      int b1 = (298 * c1 + 516 * d + 128) >> 8;
-      // A8B8G8R8 in memory = R,G,B,A bytes.
-      dst[0] = (unsigned)clamp8(r0) | ((unsigned)clamp8(g0) << 8) |
-        ((unsigned)clamp8(b0) << 16) | 0xFF000000u;
-      dst[1] = (unsigned)clamp8(r1) | ((unsigned)clamp8(g1) << 8) |
-        ((unsigned)clamp8(b1) << 16) | 0xFF000000u;
-      dst += 2;
-    }
-  }
-}
-
 static void present(void) {
   SceDisplayFrameBuf fb;
   memset(&fb, 0, sizeof(fb));
@@ -214,6 +180,7 @@ static int audio_thread(SceSize argc, void *argv) {
 
 int player_play_hls(const char *hls_url) {
   player_stop();
+  final_position=seek_position=0;valid_position=natural_end=0;audio_error=0;paused=0;
   int r = 0;
   if (!av_loaded) {
     r = sceSysmoduleLoadModule(SCE_SYSMODULE_AVPLAYER);
@@ -241,7 +208,7 @@ int player_play_hls(const char *hls_url) {
   plog("play addsrc r=0x%X", r); // URLs contain the private Plex token
   if (r < 0) { player_stop(); return r; }
 
-  paused=0;final_position=0;audio_error=0;
+  paused=0;final_position=0;audio_error=0;conversion_total=conversion_count=conversion_max=0;
   return 0;
 }
 
@@ -266,7 +233,12 @@ int player_run(const char *title,unsigned duration,unsigned base_offset) {
     player_stop();
     return -2;
   }
-  memset(framebuf, 0, FB_W * FB_H * sizeof(*framebuf));
+  clean_frame=calloc(FB_W*FB_H,sizeof(unsigned));
+  second_fb=sceKernelAllocMemBlock("plex_video_back",SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,2*1024*1024,NULL);
+  display_frames[0]=framebuf;display_frames[1]=NULL;
+  if(second_fb>=0)sceKernelGetMemBlockBase(second_fb,(void**)&display_frames[1]);
+  if(!clean_frame || !display_frames[1]){player_stop();return -2;}
+  display_index=0;memset(framebuf,0,FB_W*FB_H*4);video_pool_init();
 
   SceCtrlData pad, old;
   memset(&old, 0, sizeof(old));
@@ -283,21 +255,20 @@ int player_run(const char *title,unsigned duration,unsigned base_offset) {
     sceCtrlPeekBufferPositive(0, &pad, 1);
     unsigned pressed = pad.buttons & ~old.buttons;
     old = pad;
-    if (pressed & (SCE_CTRL_CIRCLE|SCE_CTRL_START)) { cancelled = 1; break; }
+    if (pressed & (SCE_CTRL_CIRCLE|SCE_CTRL_START)) { cancelled = pressed&SCE_CTRL_START?2:1; break; }
     sceKernelDelayThread(100000);
     waited++;
   }
   plog("play active=%d waited=%dms cancelled=%d",
     sceAvPlayerIsActive(handle) == SCE_TRUE, waited * 100, cancelled);
-  if (cancelled) { player_stop(); return -4; }
+  if (cancelled) { player_stop(); return cancelled==2?1:-4; }
   if (sceAvPlayerIsActive(handle) != SCE_TRUE) {
     player_stop();
     return -3;
   }
 
   // Starting before IsActive made the audio thread exit during buffering.
-  audio_tid = sceKernelCreateThread("plex_audio", audio_thread,
-    0x10000100, 0x4000, 0, 0, NULL);
+  audio_tid = performance_thread("plex_audio",audio_thread,0x10000100,0x4000,0x20000);
   int r = audio_tid;
   if (r < 0) { player_stop(); return r; }
   r = sceKernelStartThread(audio_tid, 0, NULL);
@@ -309,7 +280,8 @@ int player_run(const char *title,unsigned duration,unsigned base_offset) {
   }
 
   int frames = 0;
-  int quit=0,show_controls=180;
+  int quit=0,user_stopped=0,show_controls=180,restart=0,redraw=1,last_visible=-1;
+  unsigned last_second=~0u,last_progress=0;int progress_sent=0;
   unsigned no_frames=0;
   while (!stop_flag && (paused || sceAvPlayerIsActive(handle) == SCE_TRUE)) {
     if(audio_error){plog("audio output FAIL 0x%X",audio_error);break;}
@@ -317,33 +289,38 @@ int player_run(const char *title,unsigned duration,unsigned base_offset) {
       if (!frames)
         plog("play first frame %ux%u", vf.details.video.width,
           vf.details.video.height);
+      if(blit_frame(&vf)){plog("invalid video frame %ux%u",vf.details.video.width,vf.details.video.height);break;}
       frames++;
+      if(!(frames%120))plog("render conversion avg=%uus max=%uus frames=%d stamp=%llu clock=%llu",conversion_count?(unsigned)(conversion_total/conversion_count):0,conversion_max,frames,(unsigned long long)vf.timeStamp,(unsigned long long)sceAvPlayerCurrentTime(handle));
       no_frames=0;
-      blit_yvu420(vf.pData, vf.details.video.width,
-        vf.details.video.height);
+      valid_position=1;redraw=1;
     }
     else if(!paused)no_frames++;
-    final_position=base_offset+(unsigned)sceAvPlayerCurrentTime(handle);
-    if(show_controls>0){gui_player_overlay(framebuf,title,final_position,duration,paused,NULL);if(!paused)show_controls--;}
-    present();
+    if(valid_position)final_position=base_offset+(unsigned)sceAvPlayerCurrentTime(handle);
+    int visible=show_controls>0;unsigned second=final_position/1000;
+    if(visible!=last_visible || (visible && second!=last_second))redraw=1;
+    if(redraw){display_index^=1;framebuf=display_frames[display_index];memcpy(framebuf,clean_frame,FB_W*FB_H*4);
+      if(visible)gui_player_overlay(framebuf,title,final_position,duration,paused,NULL);present();redraw=0;last_visible=visible;last_second=second;}
+    if(show_controls>0 && !paused)show_controls--;
+    if(progress_callback && valid_position && (second>=last_progress+10 || !progress_sent)){progress_callback(final_position,paused?2:1);last_progress=second;progress_sent=1;}
     sceCtrlPeekBufferPositive(0, &pad, 1);
     unsigned pressed = pad.buttons & ~old.buttons;
     old = pad;
     if (pressed & SCE_CTRL_START) {quit=1;break;}
-    if (pressed & SCE_CTRL_CIRCLE) break;
+    if (pressed & SCE_CTRL_CIRCLE){user_stopped=1;break;}
     if (pressed & SCE_CTRL_CROSS) {
       int rc=paused?sceAvPlayerResume(handle):sceAvPlayerPause(handle);
       if(rc>=0)paused=!paused;
       else plog("pause/resume FAIL 0x%X",rc);
-      show_controls=180;
+      show_controls=180;redraw=1;
+      if(progress_callback && valid_position)progress_callback(final_position,paused?2:1);
     }
     if(pressed & SCE_CTRL_TRIANGLE)show_controls=show_controls?0:180;
     if(pressed & (SCE_CTRL_LEFT|SCE_CTRL_RIGHT)) {
-      uint64_t at=sceAvPlayerCurrentTime(handle);
-      uint64_t target=(pressed&SCE_CTRL_LEFT)?at>10000?at-10000:0:at+10000;
-      if(duration && target+base_offset>duration)target=duration>base_offset?duration-base_offset:0;
-      int rc=sceAvPlayerJumpToTime(handle,target);if(rc<0)plog("seek FAIL 0x%X",rc);
-      show_controls=180;
+      unsigned at=valid_position?final_position:base_offset;
+      seek_position=(pressed&SCE_CTRL_LEFT)?(at>10000?at-10000:0):at+10000;
+      if(duration && seek_position>=duration)seek_position=duration>1000?duration-1000:0;
+      restart=1;break; // rebuild HLS at absolute time, including before the resume base
     }
     // A stream that never produces video must not be reported as success.
     if(!frames && no_frames>1800){plog("active without video");break;}
@@ -351,11 +328,15 @@ int player_run(const char *title,unsigned duration,unsigned base_offset) {
   }
   plog("play end frames=%d", frames);
 
+  natural_end=!restart && !quit && !user_stopped && frames && sceAvPlayerIsActive(handle)!=SCE_TRUE;
   player_stop();
-  return audio_error?audio_error:quit?1:frames?0:-5;
+  return audio_error?audio_error:restart?2:quit?1:frames?0:-5;
 }
 int player_run_blocking(void){return player_run("Now playing",0,0);}
-unsigned player_position(void){return final_position;}
+unsigned player_position(void){return valid_position?final_position:0;}
+unsigned player_seek_position(void){return seek_position;}
+int player_completed(void){return natural_end;}
+void player_progress_callback(void (*cb)(unsigned,int)){progress_callback=cb;}
 
 void player_stop(void) {
   stop_flag = 1;
@@ -373,13 +354,15 @@ void player_stop(void) {
     sceAvPlayerClose(handle);
     handle = -1;
   }
+  video_pool_shutdown();free(clean_frame);clean_frame=NULL;
   if (fb_block >= 0) {
     psvDebugScreenInit(); // restore scanout before freeing its old buffer
     sceDisplayWaitVblankStart();
     sceKernelFreeMemBlock(fb_block);
     fb_block = -1;
   }
-  framebuf = NULL;
+  if(second_fb>=0){sceKernelFreeMemBlock(second_fb);second_fb=-1;}
+  display_frames[0]=display_frames[1]=NULL;framebuf = NULL;
 }
 
 #else
@@ -392,6 +375,9 @@ int player_active(void) { return 0; }
 int player_run_blocking(void) { return -1; }
 int player_run(const char *title,unsigned duration,unsigned offset){(void)title;(void)duration;(void)offset;return -1;}
 unsigned player_position(void){return 0;}
+unsigned player_seek_position(void){return 0;}
+int player_completed(void){return 0;}
+void player_progress_callback(void (*cb)(unsigned,int)){(void)cb;}
 void player_stop(void) {}
 
 #endif

@@ -7,13 +7,17 @@
 static struct {void *ptr;unsigned size;} blocks[16];
 static int source_fail,alloc_fail,thread_fail,never_active,initial_cross,cancel_at;
 static int active_calls,frames,peeks,closed,starts,thread_started,joined;
-static int audio_case,audio_outputs;
+static int audio_case,audio_outputs,scenario,overlay_seen;
+static unsigned last_pixel;
+static uint64_t time_us;
+uint64_t sceKernelGetProcessTimeWide(void){return time_us+=100;}
+SceUID performance_thread(const char*n,SceKernelThreadEntry fn,int p,unsigned stack,int affinity){assert(affinity==0x20000);return sceKernelCreateThread(n,fn,p,(int)stack,0,affinity,NULL);}
 static int (*thread_fn)(SceSize,void*);
 static void *decoder_memory,*generic_memory;
 static SceAvPlayerInitData init_copy;
 static int open_blocks(void){int n=0;for(int i=1;i<16;i++)n+=blocks[i].ptr!=NULL;return n;}
 static void reset(void){assert(!open_blocks());source_fail=alloc_fail=thread_fail=never_active=initial_cross=cancel_at=0;
- active_calls=frames=peeks=closed=starts=thread_started=joined=audio_case=audio_outputs=0;decoder_memory=generic_memory=NULL;}
+ active_calls=frames=peeks=closed=starts=thread_started=joined=audio_case=audio_outputs=scenario=overlay_seen=0;last_pixel=0;decoder_memory=generic_memory=NULL;}
 void *mock_memalign(unsigned a,unsigned n){assert(a>=sizeof(void*) && !(a&(a-1)));return malloc(n);}
 int sceIoOpen(const char *p,int f,int m){(void)p;(void)f;(void)m;return -1;}
 int sceIoWrite(int f,const void *p,unsigned n){(void)f;(void)p;return (int)n;}
@@ -32,19 +36,22 @@ int sceKernelWaitThreadEnd(int id,void *a,void *b){(void)a;(void)b;assert(id==10
 int sceKernelDeleteThread(int id){assert(id==101);return 0;}
 int sceKernelDelayThread(unsigned n){(void)n;return 0;}
 int sceCtrlPeekBufferPositive(int port,SceCtrlData *pad,int count){(void)port;(void)count;peeks++;
+ if(scenario==1){pad->buttons=peeks==4?SCE_CTRL_LEFT:0;return 1;}
+ if(scenario==2){pad->buttons=peeks==4?SCE_CTRL_CROSS:peeks==6?SCE_CTRL_TRIANGLE:peeks>=8?SCE_CTRL_CIRCLE:0;return 1;}
  pad->buttons=cancel_at && peeks>=cancel_at?SCE_CTRL_CIRCLE:initial_cross?SCE_CTRL_CROSS:0;return 1;}
-int sceDisplaySetFrameBuf(SceDisplayFrameBuf *f,int mode){(void)mode;assert(f->base);return 0;}
+int sceDisplaySetFrameBuf(SceDisplayFrameBuf *f,int mode){(void)mode;assert(f->base);last_pixel=*(unsigned*)f->base;if(last_pixel==0xDEADBEEF)overlay_seen=1;return 0;}
 int sceDisplayWaitVblankStart(void){return 0;}
 void psvDebugScreenInit(void){}
-void gui_player_overlay(unsigned *b,const char *t,unsigned p,unsigned d,int paused,const char *m){(void)b;(void)t;(void)p;(void)d;(void)paused;(void)m;}
+void gui_player_overlay(unsigned *b,const char *t,unsigned p,unsigned d,int paused,const char *m){b[0]=0xDEADBEEF;(void)t;(void)p;(void)d;(void)paused;(void)m;}
 int sceAvPlayerInit(SceAvPlayerInitData *data){assert(data->autoStart==SCE_TRUE && data->numOutputVideoFrameBuffers>=2 && data->basePriority==125);
  assert(data->memoryReplacement.allocate && data->memoryReplacement.deallocate && data->memoryReplacement.allocateTexture && data->memoryReplacement.deallocateTexture);
  init_copy=*data;generic_memory=data->memoryReplacement.allocate(NULL,64,1024);decoder_memory=data->memoryReplacement.allocateTexture(NULL,16,800000);
  assert(generic_memory && decoder_memory);return 5;}
 int sceAvPlayerAddSource(int handle,const char *url){assert(handle==5 && url[0]);return source_fail?-20:0;}
 int sceAvPlayerStart(int h){(void)h;starts++;return -21;}
-int sceAvPlayerIsActive(int h){assert(h==5);active_calls++;return !never_active && active_calls>=3 && frames<2;}
+int sceAvPlayerIsActive(int h){assert(h==5);active_calls++;return !never_active && active_calls>=3 && (scenario==2 || frames<2);}
 int sceAvPlayerGetVideoData(int h,SceAvPlayerFrameInfo *frame){assert(h==5);static unsigned char pixels[6]={128,128,128,128,128,128};
+ if(scenario==2 && frames)return 0;
  frame->pData=pixels;frame->details.video.width=2;frame->details.video.height=2;frames++;return 1;}
 int sceAvPlayerGetAudioData(int h,SceAvPlayerFrameInfo *f){(void)h;static short pcm[2048];if(!audio_case)return 0;
  f->pData=(unsigned char*)pcm;f->details.audio.channelCount=2;f->details.audio.sampleRate=44100;f->details.audio.size=sizeof(pcm);return 1;}
@@ -62,11 +69,16 @@ int main(void){
  reset();source_fail=1;assert(player_play_hls("http://mock/video.m3u8")<0);assert(closed==1 && !open_blocks() && starts==0);
  reset();assert(!player_play_hls("http://mock/video.m3u8"));initial_cross=1;assert(!player_run("Movie",100000,12000));
  assert(frames==2 && player_position()==12080 && closed==1 && joined && !open_blocks() && starts==0);
+ reset();source_fail=1;assert(player_play_hls("http://mock/video.m3u8")<0);assert(player_position()==0);
  reset();assert(!player_play_hls("http://mock/video.m3u8"));never_active=1;assert(player_run("Movie",100000,0)<0);assert(closed==1 && !thread_started && !open_blocks());
  reset();assert(!player_play_hls("http://mock/video.m3u8"));never_active=1;cancel_at=3;assert(player_run("Movie",100000,0)==-4);assert(closed==1 && !open_blocks());
  reset();assert(!player_play_hls("http://mock/video.m3u8"));alloc_fail=1;assert(player_run("Movie",100000,0)==-2);assert(closed==1 && !open_blocks());
  reset();assert(!player_play_hls("http://mock/video.m3u8"));thread_fail=1;assert(player_run("Movie",100000,0)<0);assert(closed==1 && !open_blocks());
  reset();assert(!player_play_hls("http://mock/video.m3u8"));audio_case=1;assert(player_run("Movie",100000,0)==-31);
  assert(audio_outputs==1 && closed==1 && joined && !open_blocks());
+ reset();assert(!player_play_hls("http://mock/video.m3u8"));scenario=1;assert(player_run("Movie",100000,12000)==2);
+ assert(player_seek_position()==2040 && player_position()==12040 && !player_completed() && joined && !open_blocks());
+ reset();assert(!player_play_hls("http://mock/video.m3u8"));scenario=2;assert(!player_run("Movie",100000,0));
+ assert(overlay_seen && last_pixel==0 && !player_completed() && joined && !open_blocks());
  player_stop();assert(!open_blocks());puts("Player lifecycle tests passed (mock Vita APIs)");return 0;
 }

@@ -85,7 +85,7 @@ static const char *tag_end(const char *p) {
   return NULL;
 }
 
-int plex_parse_items(const char *xml, const char *tag, browse_item_t *out, int max) {
+int plex_parse_items_offset(const char *xml, const char *tag, browse_item_t *out, int max,int skip) {
   if (!xml || !out || max < 1) return 0;
   int n = 0;
   const char *p = xml;
@@ -103,6 +103,10 @@ int plex_parse_items(const char *xml, const char *tag, browse_item_t *out, int m
     memset(it, 0, sizeof(*it));
     if (plex_xml_attr(start, end, "title", it->title, sizeof(it->title)) < 0 ||
         plex_xml_attr(start, end, "key", it->key, sizeof(it->key)) != 0 || !it->key[0]) { p = end + 1; continue; }
+    if(skip>0){skip--;p=end+1;continue;}
+    plex_xml_attr(start, end, "parentRatingKey",it->parent_key,sizeof(it->parent_key));
+    plex_xml_attr(start,end,"grandparentRatingKey",it->grandparent_key,sizeof(it->grandparent_key));
+    it->view_count=(int)number(start,end,"viewCount");
     plex_xml_attr(start, end, "thumb", it->thumb, sizeof(it->thumb));
     if (!it->thumb[0]) plex_xml_attr(start, end, "parentThumb", it->thumb, sizeof(it->thumb));
     if (!it->thumb[0]) plex_xml_attr(start, end, "grandparentThumb", it->thumb, sizeof(it->thumb));
@@ -124,6 +128,17 @@ int plex_parse_items(const char *xml, const char *tag, browse_item_t *out, int m
   return n;
 }
 
+int plex_parse_items(const char *xml,const char *tag,browse_item_t *out,int max){return plex_parse_items_offset(xml,tag,out,max,0);}
+int plex_parse_streams(const char *xml,plex_stream_t *out,int max,char *part,unsigned cap){
+ if(!xml || !out || max<1 || !part || !cap)return 0;
+ part[0]=0;const char *p=strstr(xml,"<Part ");if(!p)return 0;const char *e=tag_end(p),*close=strstr(p,"</Part>");if(!e || !close)return 0;
+ plex_xml_attr(p,e,"id",part,cap);if(strspn(part,"0123456789")!=strlen(part))return 0;int n=0;
+ while(n<max && (p=strstr(e,"<Stream ")) && p<close){e=tag_end(p);if(!e)break;int type=(int)number(p,e,"streamType");if(type!=2 && type!=3){e++;continue;}
+  plex_stream_t *st=out+n;memset(st,0,sizeof(*st));st->type=type;st->selected=(int)number(p,e,"selected");plex_xml_attr(p,e,"id",st->id,sizeof(st->id));
+  if(!st->id[0] || strspn(st->id,"0123456789")!=strlen(st->id)){e++;continue;}
+  plex_xml_attr(p,e,"displayTitle",st->label,sizeof(st->label));if(!st->label[0])plex_xml_attr(p,e,"language",st->label,sizeof(st->label));if(!st->label[0])plex_xml_attr(p,e,"codec",st->label,sizeof(st->label));n++;e++;
+ }return n;
+}
 int plex_parse_page(const char *xml, browse_page_t *page) {
   const char *p = strstr(xml, "<MediaContainer"), *end;
   if (!p || !(end = tag_end(p))) return -1;
@@ -154,6 +169,7 @@ int plex_parse_servers(const char *xml, plex_server_t *out, int max) {
         if (!ce || ce > close) break;
         plex_xml_attr(c, ce, "local", local, sizeof(local));
         if (plex_xml_attr(c, ce, "uri", uri, sizeof(uri)) == 0) {
+          if(server.connection_count<4)snprintf(server.connections[server.connection_count++],256,"%s",uri);
           int score = (!strcmp(local, "1") ? 4 : 0) + (!strncmp(uri, "http://", 7) ? 2 : 0);
           if (score > best) { best = score; snprintf(server.url, sizeof(server.url), "%s", uri); }
         }

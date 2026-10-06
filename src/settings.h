@@ -9,6 +9,7 @@ typedef struct {
   char account_token[128];
   char client_id[40];
   int bitrate, resume, sort;
+  int performance, autoplay, subtitles;
 } settings_t;
 
 void settings_defaults(settings_t *s);

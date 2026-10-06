@@ -4,11 +4,16 @@ project(vita-plex-client C)
 # Windows: cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/Users/steve/vita-dev/vitasdk/vitasdk/share/vita.toolchain.cmake -B build
 set(VITA_TITLEID "PLEX00001")
 set(VITA_TITLE "Plex Client")
-set(VITA_VERSION "01.32")
+set(VITA_VERSION "01.33")
 
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
 add_executable(${PROJECT_NAME}
+  src/performance.c
+  src/network.c
+  src/progress.c
+  src/video.c
+  src/session.c
   src/main.c
   src/plex.c
   src/plex_auth.c
@@ -28,9 +33,10 @@ target_include_directories(${PROJECT_NAME} PRIVATE src)
 target_link_options(${PROJECT_NAME} PRIVATE "LINKER:-z,norelro")
 # Segment 0 (code+rodata) must stay well under the 128KB boundary where
 # the data segment is pinned: optimize for size and drop unused sections.
-target_compile_options(${PROJECT_NAME} PRIVATE -Os -ffunction-sections -fdata-sections)
+target_compile_options(${PROJECT_NAME} PRIVATE -Os -Wall -Wextra -Wno-misleading-indentation -Wno-unused-parameter -ffunction-sections -fdata-sections)
 target_link_options(${PROJECT_NAME} PRIVATE "LINKER:--gc-sections")
 target_link_libraries(${PROJECT_NAME}
+  ScePower_stub
   SceDisplay_stub
   SceCtrl_stub
   SceSysmodule_stub

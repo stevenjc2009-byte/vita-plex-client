@@ -19,4 +19,5 @@ vdpm curl openssl || true
 SRC=$(dirname "$0")
 cmake -DCMAKE_TOOLCHAIN_FILE=$VITASDK/share/vita.toolchain.cmake -B /tmp/vita-plex-build -S "$SRC"
 cmake --build /tmp/vita-plex-build
-echo "VPK: /tmp/vita-plex-build/vita-plex-client.vpk"
+echo "VPK files:"
+find /tmp/vita-plex-build -maxdepth 1 -name "vita-plex-client-*.vpk" -print

@@ -6,12 +6,12 @@
 typedef struct {
   char title[BROWSE_TITLE_LEN], key[BROWSE_KEY_LEN], thumb[BROWSE_KEY_LEN];
   char type[24], rating_key[32], parent_title[160], summary[768];
-  char year[12], content_rating[24];
+  char year[12], content_rating[24],parent_key[32],grandparent_key[32];
   uint32_t duration, view_offset;
-  int index, parent_index, is_directory;
+  int index, parent_index, is_directory,view_count;
 } browse_item_t;
 typedef struct { int offset, size, total; } browse_page_t;
-typedef struct { char name[160], url[256], token[128]; } plex_server_t;
+typedef struct { char name[160], url[256], token[128],connections[4][256];int connection_count; } plex_server_t;
 int plex_xml_attr(const char *start, const char *end, const char *name,
   char *out, unsigned size);
 int plex_parse_items(const char *xml, const char *tag, browse_item_t *out, int max);
@@ -23,3 +23,7 @@ void plex_build_items_url(const char *server, const char *token,
   const char *section_key, char *out, unsigned size);
 void plex_build_timeline_url(const char *server, const char *token,
   const char *rating_key, int state, char *out, unsigned size);
+
+int plex_parse_items_offset(const char *xml,const char *tag,browse_item_t *out,int max,int skip);
+typedef struct {char id[32],label[160];int type,selected;} plex_stream_t;
+int plex_parse_streams(const char *xml,plex_stream_t *out,int max,char *part,unsigned cap);

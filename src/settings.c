@@ -16,6 +16,8 @@ void settings_defaults(settings_t *s) {
   snprintf(s->server, sizeof(s->server), "http://192.168.0.32:32400");
   s->bitrate = 2000;
   s->resume = 1;
+  s->performance = 2; // requested boosted launch; plugin may enforce its own profile
+  s->subtitles = 1; // server default
 }
 
 void settings_ensure_client_id(settings_t *s) {
@@ -47,6 +49,9 @@ int settings_load(settings_t *s) {
     if (sscanf(line, "bitrate=%d", &s->bitrate) == 1) continue;
     if (sscanf(line, "resume=%d", &s->resume) == 1) continue;
     if (sscanf(line, "sort=%d", &s->sort) == 1) continue;
+    if (sscanf(line, "performance=%d", &s->performance) == 1) continue;
+    if (sscanf(line, "autoplay=%d", &s->autoplay) == 1) continue;
+    if (sscanf(line, "subtitles=%d", &s->subtitles) == 1) continue;
   }
   fclose(f);
   settings_ensure_client_id(s);
@@ -54,14 +59,17 @@ int settings_load(settings_t *s) {
   s->resume=!!s->resume;
   if (s->sort<0 || s->sort>2) s->sort=0;
   if (!s->account_token[0]) snprintf(s->account_token,sizeof(s->account_token),"%s",s->token);
+  if(s->performance<0 || s->performance>2)s->performance=2;
+  s->autoplay=!!s->autoplay; s->subtitles=!!s->subtitles;
+  if(settings_server_url(s->server)<0)snprintf(s->server,sizeof(s->server),"http://192.168.0.32:32400");
   return 0;
 }
 
 int settings_save(const settings_t *s) {
   FILE *f = fopen(CONFIG_PATH ".tmp", "w");
   if (!f) return -1;
-  int r = fprintf(f, "server=%s\ntoken=%s\naccount_token=%s\nclient_id=%s\nbitrate=%d\nresume=%d\nsort=%d\n",
-    s->server, s->token, s->account_token, s->client_id, s->bitrate, s->resume, s->sort);
+  int r = fprintf(f, "server=%s\ntoken=%s\naccount_token=%s\nclient_id=%s\nbitrate=%d\nresume=%d\nsort=%d\nperformance=%d\nautoplay=%d\nsubtitles=%d\n",
+    s->server, s->token, s->account_token, s->client_id, s->bitrate, s->resume, s->sort,s->performance,s->autoplay,s->subtitles);
   int closed = fclose(f);
   if (r < 0 || closed != 0) { remove(CONFIG_PATH ".tmp"); return -1; }
   // Vita rename replaces the destination; the host C runtime on Windows does

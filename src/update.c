@@ -22,6 +22,7 @@ int update_version_newer(const char *candidate, const char *current) {
 #ifdef __vita__
 
 #include "http.h"
+#include "network.h"
 
 #include <psp2/io/fcntl.h>
 #include <psp2/kernel/processmgr.h>
@@ -32,11 +33,11 @@ int update_version_newer(const char *candidate, const char *current) {
 int update_check(char *dl_url_out, unsigned url_len,
     char *tag_out, unsigned tag_len) {
   char url[256], tag[32];
-  static char body[8192];
+  static char body[65536];
   snprintf(url, sizeof(url),
     "https://api.github.com/repos/%s/releases/latest", UPDATE_REPO);
-  if (http_get(url, "PlexVita", "application/vnd.github+json",
-        body, sizeof(body)) != 0)
+  if (network_get(url, "PlexVita", "application/vnd.github+json",
+        body, sizeof(body),15) != 0)
     return -1;
   if (plex_json_string(body, "tag_name", tag, sizeof(tag)) != 0) return -1;
   if (tag_out) snprintf(tag_out, tag_len, "%s", tag);
@@ -54,7 +55,7 @@ int update_check(char *dl_url_out, unsigned url_len,
 
 int update_download(const char *dl_url,
     void (*progress_cb)(unsigned received, unsigned total)) {
-  return http_download(dl_url, UPDATE_VPK_PATH, progress_cb);
+  (void)progress_cb;return network_download(dl_url, UPDATE_VPK_PATH);
 }
 
 int update_install(void) {

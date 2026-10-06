@@ -14,8 +14,27 @@
 #include <psp2/libssl.h>
 #include <psp2/sysmodule.h>
 #include <string.h>
+#include <psp2/kernel/threadmgr.h>
+#include <psp2/kernel/processmgr.h>
 static SceUID net_memid = -1;
-static int inited = 0;
+static int inited = 0,net_ready,ctl_ready,http_ready,ssl_ready;
+static unsigned modules;
+static SceUID request_lock=-1;
+static int active_request=-1;
+static volatile int cancelled;
+static unsigned deadline_seconds=15;
+void http_prepare(unsigned seconds){__atomic_store_n(&cancelled,0,__ATOMIC_RELEASE);deadline_seconds=seconds?seconds:15;}
+void http_cancel(void){__atomic_store_n(&cancelled,1,__ATOMIC_RELEASE);
+ if(request_lock>=0){sceKernelLockMutex(request_lock,1,NULL);if(active_request>=0)sceHttpAbortRequest(active_request);sceKernelUnlockMutex(request_lock,1);}}
+static int expired(uint64_t start){return __atomic_load_n(&cancelled,__ATOMIC_ACQUIRE) || sceKernelGetProcessTimeWide()-start>(uint64_t)deadline_seconds*1000000;}
+static void track(int request){if(request_lock>=0){sceKernelLockMutex(request_lock,1,NULL);active_request=request;sceKernelUnlockMutex(request_lock,1);}}
+static void release_request(int request){if(request_lock>=0)sceKernelLockMutex(request_lock,1,NULL);if(active_request==request)active_request=-1;sceHttpDeleteRequest(request);if(request_lock>=0)sceKernelUnlockMutex(request_lock,1);}
+void http_shutdown(void){
+ if(ssl_ready){sceSslTerm();ssl_ready=0;}if(http_ready){sceHttpTerm();http_ready=0;}if(ctl_ready){sceNetCtlTerm();ctl_ready=0;}if(net_ready){sceNetTerm();net_ready=0;}
+ if(net_memid>=0){sceKernelFreeMemBlock(net_memid);net_memid=-1;}
+ if(request_lock>=0){sceKernelDeleteMutex(request_lock);request_lock=-1;}
+ if(modules&8)sceSysmoduleUnloadModule(SCE_SYSMODULE_HTTPS);if(modules&4)sceSysmoduleUnloadModule(SCE_SYSMODULE_SSL);if(modules&2)sceSysmoduleUnloadModule(SCE_SYSMODULE_HTTP);if(modules&1)sceSysmoduleUnloadModule(SCE_SYSMODULE_NET);modules=0;inited=0;
+}
 // Last HTTP status seen (or negative SceHttp error). Shown in the UI
 // so failures are diagnosable instead of a bare "network error".
 static int last_status = 0;
@@ -31,14 +50,15 @@ unsigned http_last_ssl_detail(void) { return last_ssl_detail; }
 int http_init(void) {
   if (inited) return 0;
   int r;
+  request_lock=sceKernelCreateMutex("plex_http_request",0,0,NULL);if(request_lock<0)return request_lock;
   r = sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
-  if (r < 0) return r;
+  if (r < 0) goto fail;modules|=1;
   r = sceSysmoduleLoadModule(SCE_SYSMODULE_HTTP);
-  if (r < 0) return r;
+  if (r < 0) goto fail;modules|=2;
   r = sceSysmoduleLoadModule(SCE_SYSMODULE_SSL);
-  if (r < 0) return r;
+  if (r < 0) goto fail;modules|=4;
   r = sceSysmoduleLoadModule(SCE_SYSMODULE_HTTPS);
-  if (r < 0) return r;
+  if (r < 0) goto fail;modules|=8;
 
   // Net stack memory must come from its own memblock (not .bss).
   SceNetInitParam p;
@@ -46,17 +66,17 @@ int http_init(void) {
   p.flags = 0;
   net_memid = sceKernelAllocMemBlock("SceNetMemory", 0x0C20D060,
     p.size, NULL);
-  if (net_memid < 0) return net_memid;
-  if (sceKernelGetMemBlockBase(net_memid, &p.memory) < 0) return -1;
+  if (net_memid < 0){r=net_memid;goto fail;}
+  if ((r=sceKernelGetMemBlockBase(net_memid, &p.memory)) < 0)goto fail;
 
   r = sceNetInit(&p);
-  if (r < 0) return r;
+  if (r < 0) goto fail;net_ready=1;
   r = sceNetCtlInit();
-  if (r < 0) return r;
+  if (r < 0) goto fail;ctl_ready=1;
   r = sceHttpInit(2 * 1024 * 1024);
-  if (r < 0) return r;
+  if (r < 0) goto fail;http_ready=1;
   r = sceSslInit(1 * 1024 * 1024);
-  if (r < 0) return r;
+  if (r < 0) goto fail;ssl_ready=1;
 
   // NOTE: no sceHttpsDisableOption — plex.tv keeps full cert/CN/CA
   // verification against the Vita CA store. LAN Plex traffic is
@@ -77,11 +97,13 @@ int http_init(void) {
     ca1.size = plex_ca_int_len;
     ca_list[0] = &ca0;
     ca_list[1] = &ca1;
-    sceHttpsLoadCert(2, ca_list, NULL, NULL);
+    r=sceHttpsLoadCert(2, ca_list, NULL, NULL);if(r<0)goto fail;
   }
 
   inited = 1;
   return 0;
+fail:
+  http_shutdown();return r;
 }
 
 static void set_plex_headers(int tmpl, const char *client_id,
@@ -103,7 +125,7 @@ static int run(const char *url, const char *client_id, const char *accept,
     int method, char *body, unsigned body_len) {
   if (body && body_len) body[0] = 0;
   int code = -1, tmpl = -1, conn = -1, req = -1, r;
-  unsigned used = 0;
+  unsigned used = 0;uint64_t started=sceKernelGetProcessTimeWide();
   last_status = 0;
   last_error = 0;
   last_ssl_err = 0;
@@ -117,12 +139,13 @@ static int run(const char *url, const char *client_id, const char *accept,
   if (conn < 0) { last_error = conn; goto out; }
   req = sceHttpCreateRequestWithURL(conn, method, url, 0);
   if (req < 0) { last_error = req; goto out; }
+  track(req);if(expired(started)){last_error=-2;goto out;}
   // Fail fast on dead networks: stock timeouts are 30s connect /
   // 120s send+recv, which looks like a hang with zero feedback.
-  sceHttpSetResolveTimeOut(req, 10 * 1000 * 1000);
-  sceHttpSetConnectTimeOut(req, 10 * 1000 * 1000);
-  sceHttpSetSendTimeOut(req, 15 * 1000 * 1000);
-  sceHttpSetRecvTimeOut(req, 15 * 1000 * 1000);
+  sceHttpSetResolveTimeOut(req, 2 * 1000 * 1000);
+  sceHttpSetConnectTimeOut(req, 2 * 1000 * 1000);
+  sceHttpSetSendTimeOut(req, 3 * 1000 * 1000);
+  sceHttpSetRecvTimeOut(req, 3 * 1000 * 1000);
 
   r = sceHttpSendRequest(req, NULL, 0);
   if (r < 0) {
@@ -141,6 +164,7 @@ static int run(const char *url, const char *client_id, const char *accept,
   if (status < 200 || status >= 300) goto out;
 
   for (;;) {
+    if(expired(started)){last_error=-2;goto out;}
     if (used == body_len - 1) {
       char extra;
       int n = sceHttpReadData(req, &extra, 1);
@@ -157,7 +181,7 @@ static int run(const char *url, const char *client_id, const char *accept,
 
 out:
   if (code < 0 && body_len) body[0] = 0;
-  if (req >= 0) sceHttpDeleteRequest(req);
+  if (req >= 0) release_request(req);
   if (conn >= 0) sceHttpDeleteConnection(conn);
   if (tmpl >= 0) sceHttpDeleteTemplate(tmpl);
   return code;
@@ -173,10 +197,11 @@ int http_get(const char *url, const char *client_id, const char *accept,
     char *body, unsigned body_len) {
   return run(url, client_id, accept, SCE_HTTP_METHOD_GET, body, body_len);
 }
+int http_put(const char *url,const char *client,char *body,unsigned cap){return run(url,client,"text/xml",SCE_HTTP_METHOD_PUT,body,cap);}
 static int download(const char *url, const char *path,
-    void (*progress_cb)(unsigned received, unsigned total), volatile int *cancel) {
+    void (*progress_cb)(unsigned received, unsigned total), volatile int *cancel,unsigned maximum) {
   int code = -1, tmpl = -1, conn = -1, req = -1, fd = -1, r;
-  char chunk[8192];
+  char chunk[8192];uint64_t started=sceKernelGetProcessTimeWide();
   unsigned received = 0, total = 0;
   unsigned long long len64 = 0;
   int have_length = 0;
@@ -189,6 +214,7 @@ static int download(const char *url, const char *path,
   if (conn < 0) { last_error = conn; goto out; }
   req = sceHttpCreateRequestWithURL(conn, SCE_HTTP_METHOD_GET, url, 0);
   if (req < 0) { last_error = req; goto out; }
+  track(req);
   // Release assets 302-redirect to object storage.
   sceHttpSetAutoRedirect(req, 1);
   sceHttpSetResolveTimeOut(req, (cancel ? 2 : 10) * 1000 * 1000);
@@ -204,7 +230,7 @@ static int download(const char *url, const char *path,
   last_status = status;
   if (status != 200) goto out;
   if (sceHttpGetResponseContentLength(req, &len64) == 0) {
-    if (len64 > 0xFFFFFFFFu) { last_error = -1; goto out; }
+    if (len64 > maximum) { last_error = -1; goto out; }
     total = (unsigned)len64;
     have_length = 1;
   }
@@ -213,10 +239,11 @@ static int download(const char *url, const char *path,
   if (fd < 0) { last_error = fd; goto out; }
 
   for (;;) {
-    if (cancel && *cancel) { last_error = -1; goto out; }
+    if ((cancel && __atomic_load_n(cancel,__ATOMIC_ACQUIRE)) || expired(started)) { last_error = -2; goto out; }
     r = sceHttpReadData(req, chunk, sizeof(chunk));
     if (r < 0) { last_error = r; goto out; }
     if (r == 0) break;
+    if((unsigned)r>maximum-received){last_error=-3;goto out;}
     int wrote = sceIoWrite(fd, chunk, r);
     if (wrote != r) { last_error = wrote < 0 ? wrote : -1; goto out; }
     received += (unsigned)r;
@@ -227,22 +254,24 @@ static int download(const char *url, const char *path,
 
 out:
   if (fd >= 0) {
-    sceIoClose(fd);
+    if(sceIoClose(fd)<0)code=-1;
     if (code < 0) sceIoRemove(path); // never cache a partial poster/VPK
   }
-  if (req >= 0) sceHttpDeleteRequest(req);
+  if (req >= 0) release_request(req);
   if (conn >= 0) sceHttpDeleteConnection(conn);
   if (tmpl >= 0) sceHttpDeleteTemplate(tmpl);
   return code;
 }
 int http_download(const char *url, const char *path,
-    void (*cb)(unsigned, unsigned)) { return download(url,path,cb,NULL); }
+    void (*cb)(unsigned, unsigned)) { return download(url,path,cb,NULL,32*1024*1024); }
 int http_download_art(const char *url,const char *path,volatile int *cancel) {
-  return download(url,path,NULL,cancel);
+  return download(url,path,NULL,cancel,512*1024);
 }
 
 #else
 
+int http_put(const char*u,const char*c,char*b,unsigned n){(void)u;(void)c;(void)b;(void)n;return -1;}
+void http_prepare(unsigned s){(void)s;}void http_cancel(void){}void http_shutdown(void){}
 // Host stubs (self-test never performs network I/O).
 int http_init(void) { return 0; }
 int http_post_pins(const char *u, const char *c, char *b, unsigned l) {

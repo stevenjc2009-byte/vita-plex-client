@@ -18,9 +18,9 @@ int plex_build_playback_url(const settings_t *s,const char *key,const char *sess
   plex_url_encode("add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mpegts&videoCodec=h264&audioCodec=aac&replace=true)+add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.frameRate&value=30&replace=true)",profile,sizeof(profile));
   int n=snprintf(out,size,"%s/video/:/transcode/universal/start.m3u8?path=%s&mediaIndex=0&partIndex=0&protocol=hls&"
     "videoResolution=960x544&maxVideoBitrate=%d&videoQuality=100&videoCodec=h264&audioCodec=aac&audioChannels=2&"
-    "directPlay=0&directStream=0&subtitles=burn&subtitleSize=100&location=lan&hasMDE=1&offset=%u&session=%s&"
+    "directPlay=0&directStream=0&subtitles=%s&subtitleSize=100&location=lan&hasMDE=1&offset=%u&session=%s&"
     "X-Plex-Product=PlexVita&X-Plex-Platform=PlayStation%%20Vita&X-Plex-Client-Profile-Name=Chrome&X-Plex-Client-Identifier=%s&"
-    "X-Plex-Client-Profile-Extra=%s&X-Plex-Token=%s",s->server,path,s->bitrate,offset/1000,sid,id,profile,token);
+    "X-Plex-Client-Profile-Extra=%s&X-Plex-Token=%s",s->server,path,s->bitrate,s->subtitles?"burn":"none",offset/1000,sid,id,profile,token);
   return n<0 || (unsigned)n>=size?-1:0;
 }
 
@@ -57,21 +57,7 @@ int plex_hls_media_url(const char *base,const char *body,const char *token,char 
   return n<0 || (unsigned)n>=size?-1:1;
 }
 
-void plex_build_vita_transcode_url(
-  const char *server, const char *token, const char *key,
-  char *out, unsigned out_len) {
-  // Universal transcode pinned to Vita hardware decode limits.
-  // Forces 720p->544p H.264 + AAC, directPlay=0 so PMS burns/transcodes.
-  char encoded_key[384], encoded_token[384];
-  plex_url_encode(key, encoded_key, sizeof(encoded_key));
-  plex_url_encode(token, encoded_token, sizeof(encoded_token));
-  snprintf(out, out_len,
-    "%s/video/:/transcode/universal/start.m3u8?"
-    "path=%s&"
-    "mediaIndex=0&partIndex=0&protocol=hls&"
-    "videoResolution=960x544&maxVideoBitrate=%d&"
-    "videoCodec=h264&audioCodec=aac&audioChannels=2&"
-    "directPlay=0&directStream=0&"
-    "X-Plex-Token=%s",
-    server, encoded_key, VITA_PLEX_VIDEO_BITRATE_KBPS, encoded_token);
+void plex_build_vita_transcode_url(const char *server,const char *token,const char *key,char *out,unsigned cap){
+ settings_t st;settings_defaults(&st);snprintf(st.server,sizeof(st.server),"%s",server);snprintf(st.token,sizeof(st.token),"%s",token);snprintf(st.client_id,sizeof(st.client_id),"vita-legacy");
+ if(plex_build_playback_url(&st,key,"vita-legacy",0,out,cap)<0 && cap)out[0]=0;
 }

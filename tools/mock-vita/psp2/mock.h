@@ -3,13 +3,14 @@
 #include <stddef.h>
 typedef int SceUID;
 typedef unsigned SceSize;
+typedef int (*SceKernelThreadEntry)(SceSize,void*);
 typedef int SceAvPlayerHandle;
 typedef struct {unsigned buttons;} SceCtrlData;
 typedef struct {unsigned size;void *base;unsigned pitch,pixelformat,width,height;} SceDisplayFrameBuf;
 typedef struct {unsigned size,attr,alignment;} SceKernelAllocMemBlockOpt;
-typedef struct {unsigned width,height;} MockVideo;
+typedef struct {unsigned width,height;float aspectRatio;} MockVideo;
 typedef struct {unsigned channelCount,sampleRate,size;} MockAudio;
-typedef struct {unsigned char *pData;union{MockVideo video;MockAudio audio;} details;} SceAvPlayerFrameInfo;
+typedef struct {unsigned char *pData;uint64_t timeStamp;union{MockVideo video;MockAudio audio;} details;} SceAvPlayerFrameInfo;
 typedef struct {
   struct {void *objectPointer;void *(*allocate)(void*,uint32_t,uint32_t);void(*deallocate)(void*,void*);
     void *(*allocateTexture)(void*,uint32_t,uint32_t);void(*deallocateTexture)(void*,void*);} memoryReplacement;
@@ -66,3 +67,14 @@ int sceAvPlayerClose(int);
 int sceAudioOutOpenPort(int,int,int,int);
 int sceAudioOutOutput(int,const void*);
 int sceAudioOutReleasePort(int);
+
+int sceKernelCreateSema(const char*,unsigned,int,int,void*);
+int sceKernelWaitSema(int,int,unsigned*);
+int sceKernelSignalSema(int,int);
+int sceKernelDeleteSema(int);
+int scePowerGetArmClockFrequency(void);
+int scePowerGetGpuClockFrequency(void);
+int scePowerSetArmClockFrequency(int);
+int scePowerSetGpuClockFrequency(int);
+
+uint64_t sceKernelGetProcessTimeWide(void);

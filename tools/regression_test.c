@@ -23,6 +23,12 @@ int main(void) {
   assert(plex_parse_pin_create("{\"id\":987,\"code\":\"ABCD\"}", &pin) == 0);
   assert(pin.pin_id == 987 && !strcmp(pin.code, "ABCD"));
 
+  char escaped[128];
+  assert(!plex_json_string("{\"body\":\"escaped \\\"tag_name\\\" text\",\"tag_name\":\"v01.33\"}","tag_name",escaped,sizeof(escaped)) && !strcmp(escaped,"v01.33"));
+  assert(!plex_json_string("{\"value\":\"Caf\\u00e9 \\/ test\"}","value",escaped,sizeof(escaped)) && !strcmp(escaped,"Caf\xC3\xA9 / test"));
+  assert(plex_parse_pin_create("{\"id\":9999999999999999,\"code\":\"ABCD\"}",&pin)<0);
+  assert(plex_json_string("{\"value\":\"\\uD800\"}","value",escaped,sizeof(escaped))<0);
+
   plex_url_encode("abc", small, sizeof(small));
   assert(!strcmp(small, "abc"));
   plex_url_encode("&", small, sizeof(small));
@@ -61,6 +67,11 @@ int main(void) {
   const char *resources="<MediaContainer><Device name='Home' provides='server' accessToken='server-token'><Connection local='0' uri='https://public:32400'/><Connection local='1' uri='http://192.168.0.32:32400'/></Device><Device name='Web' provides='client'></Device></MediaContainer>";
   assert(plex_parse_servers(resources,servers,2)==1);
   assert(!strcmp(servers[0].url,"http://192.168.0.32:32400") && !strcmp(servers[0].token,"server-token"));
+  assert(plex_parse_items_offset(xml,NULL,items,4,1)==1 && !strcmp(items[0].title,"Season 1"));
+  plex_stream_t tracks[4];char part[32];
+  const char *track_xml="<MediaContainer><Video><Media><Part id='55'><Stream id='1' streamType='1'/><Stream id='2' streamType='2' displayTitle='English' selected='1'/><Stream id='3' streamType='3' displayTitle='French &amp; SDH'/></Part></Media></Video></MediaContainer>";
+  assert(plex_parse_streams(track_xml,tracks,4,part,sizeof(part))==2 && !strcmp(part,"55"));
+  assert(tracks[0].type==2 && tracks[0].selected==1 && !strcmp(tracks[1].label,"French & SDH"));
   char media[4096];
   assert(plex_hls_media_url("http://s:32400/path/start.m3u8?token=old","#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100\nchild/index.m3u8\n","a&b",media,sizeof(media))==1);
   assert(!strcmp(media,"http://s:32400/path/child/index.m3u8?X-Plex-Token=a%26b"));
