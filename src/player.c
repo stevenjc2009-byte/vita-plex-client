@@ -12,6 +12,7 @@
 #include <psp2/avplayer.h>
 #include <psp2/ctrl.h>
 #include <psp2/display.h>
+#include <psp2/kernel/sysmem.h>
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/sysmodule.h>
 #include <psp2/types.h>
@@ -27,7 +28,9 @@ static SceAvPlayerHandle handle = -1;
 static volatile int stop_flag = 0;
 static volatile int audio_port = -1;
 
-// 960x544x32bpp scanout buffer (heap: keeps .bss small for the ELF tools).
+// 960x544x32bpp scanout buffer. Must be CDRAM (physically contiguous):
+// malloc'd heap is not scanout-capable and shows white (gui v01.24).
+static SceUID fb_block = -1;
 static unsigned int *framebuf = NULL;
 
 static int clamp8(int v) {
@@ -171,7 +174,11 @@ int player_active(void) {
 void player_run_blocking(void) {
   if (handle < 0) return;
   stop_flag = 0;
-  framebuf = malloc(FB_W * FB_H * sizeof(*framebuf));
+  fb_block = sceKernelAllocMemBlock("plex_video",
+    SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
+    FB_W * FB_H * sizeof(*framebuf), NULL);
+  if (fb_block >= 0)
+    sceKernelGetMemBlockBase(fb_block, (void **)&framebuf);
   if (!framebuf) return;
   memset(framebuf, 0, FB_W * FB_H * sizeof(*framebuf));
 
@@ -203,7 +210,10 @@ void player_run_blocking(void) {
     sceKernelDeleteThread(atid);
   }
   player_stop();
-  free(framebuf);
+  if (fb_block >= 0) {
+    sceKernelFreeMemBlock(fb_block);
+    fb_block = -1;
+  }
   framebuf = NULL;
   psvDebugScreenInit(); // hand the screen back to the text UI
 }

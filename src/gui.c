@@ -14,6 +14,7 @@
 
 #include <psp2/ctrl.h>
 #include <psp2/display.h>
+#include <psp2/kernel/sysmem.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
 #include <psp2/kernel/threadmgr.h>
@@ -65,6 +66,7 @@ static void gui_log(const char *fmt, ...) {
 #define CELLW (FB_W / COLS)
 #define TOP 64
 
+static SceUID g_fbid = -1;
 static unsigned int *g_fb = NULL;
 
 static void present(void) {
@@ -204,7 +206,15 @@ static void fetch_thumb(const char *server, const char *token,
 int gui_browse(const char *title, const browse_item_t *items, int n,
     const char *server, const char *token) {
   if (!g_fb) {
-    g_fb = malloc(FB_W * FB_H * sizeof(*g_fb));
+    // Scanout needs CDRAM (physically contiguous): malloc'd heap
+    // shows as a white screen (v01.24 photo). Same recipe debugScreen
+    // itself uses. ~2MB fits; 16MB GXM blocks did NOT (01.08-16).
+    g_fbid = sceKernelAllocMemBlock("plex_gui",
+      SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
+      FB_W * FB_H * sizeof(*g_fb), NULL);
+    if (g_fbid >= 0)
+      sceKernelGetMemBlockBase(g_fbid, (void **)&g_fb);
+    gui_log("gui fb block=0x%X base=%p", g_fbid, g_fb);
     if (!g_fb) return -1;
   }
   sceIoMkdir("ux0:data/plex-client/art", 0777);
