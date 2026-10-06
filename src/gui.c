@@ -21,11 +21,30 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 
 #define STBI_ONLY_JPEG
 #define STBI_NO_STDIO
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+
+// Own append-log (main.c owns debug.log truncated at boot; we append).
+static SceUID g_log = -1;
+static void gui_log(const char *fmt, ...) {
+  if (g_log < 0) {
+    g_log = sceIoOpen("ux0:data/plex-client/debug.log",
+      SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
+    if (g_log < 0) return;
+  }
+  char tmp[256];
+  int n = 0;
+  va_list ap;
+  va_start(ap, fmt);
+  n = vsnprintf(tmp, sizeof(tmp) - 2, fmt, ap);
+  va_end(ap);
+  tmp[n++] = '\n';
+  sceIoWrite(g_log, tmp, (SceSize)n);
+}
 
 #define FB_W 960
 #define FB_H 544
@@ -148,7 +167,9 @@ static void fetch_thumb(const char *server, const char *token,
   if (file_exists(path)) return;
   snprintf(url, sizeof(url), "%s%s?X-Plex-Token=%s&width=160&height=240",
     server, thumb, token);
-  http_download(url, path, NULL);
+  int rc = http_download(url, path, NULL);
+  gui_log("art rc=%d http=%d err=0x%X %s", rc, http_last_status(),
+    http_last_error(), thumb);
 }
 
 int gui_browse(const char *title, const browse_item_t *items, int n,
@@ -158,6 +179,10 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
     if (!g_fb) return -1;
   }
   sceIoMkdir("ux0:data/plex-client/art", 0777);
+  gui_log("gui enter n=%d title=%.40s", n, title ? title : "?");
+  if (n > 0)
+    gui_log("gui item0 title=%.40s thumb=%.80s", items[0].title,
+      items[0].thumb);
   // Paint before any blocking thumb fetch: first entry would sit on
   // uninitialized pixels for seconds while 10 posters download.
   rect(0, 0, FB_W, FB_H, C_BG);
@@ -197,12 +222,15 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
 
     if (dirty) {
       dirty = 0;
+      int art_ok = 0, art_try = 0;
       rect(0, 0, FB_W, FB_H, C_BG);
       rect(0, 0, FB_W, 48, C_ORANGE);
       draw_text_trunc(title, 16, 16, 40, C_BLACK);
       char pg[32];
       snprintf(pg, sizeof(pg), "p%d", page + 1);
       draw_text(pg, FB_W - 80, 16, C_BLACK);
+      if (n <= 0)
+        draw_text("Empty library (n=0)", 16, 120, C_WHITE);
       for (int i = page * PAGE; i < (page + 1) * PAGE && i < n; i++) {
         int cell = i - page * PAGE;
         int cx = (cell % COLS) * CELLW;
@@ -212,6 +240,7 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
         // Poster or fallback tile.
         int drawn = 0;
         if (items[i].thumb[0]) {
+          art_try++;
           char path[256];
           art_path(items[i].thumb, path, sizeof(path));
           SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0);
@@ -228,11 +257,18 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
                   blit_rgb(img, w, h, px, py, PW, PH);
                   stbi_image_free(img);
                   drawn = 1;
+                  art_ok++;
+                } else {
+                  gui_log("art decode FAIL sz=%d %.60s", sz, path);
                 }
               }
               free(buf);
+            } else {
+              gui_log("art bad size sz=%d %.60s", sz, path);
             }
             sceIoClose(fd);
+          } else {
+            gui_log("art missing %.60s", path);
           }
         }
         if (!drawn) {
@@ -247,6 +283,11 @@ int gui_browse(const char *title, const browse_item_t *items, int n,
         draw_text_trunc(items[i].title, px - 8, py + PH + 6, 11, C_WHITE);
       }
       draw_text("X play   O back   START quits", 16, FB_H - 32, C_GREY);
+      char ac[32];
+      snprintf(ac, sizeof(ac), "art %d/%d", art_ok, art_try);
+      draw_text(ac, FB_W - 160, FB_H - 32, C_GREY);
+      gui_log("gui page=%d cursor=%d art %d/%d", page, cursor, art_ok,
+        art_try);
       present();
     }
     sceDisplayWaitVblankStart();
