@@ -10,6 +10,7 @@ static int request(const settings_t *st,const char *url,char *body,unsigned size
  if(result)snprintf(notice,cap,network_cancelled()?"Request cancelled.":"Library request failed (HTTP %d / error 0x%X).",network_last_status(),network_last_error());return result;
 }
 int library_scan(settings_t *st,const char *section,char *body,unsigned body_size,char *notice,unsigned cap) {
+  if(!settings_connection_allowed(st)){snprintf(notice,cap,"Away mode needs a secure remote connection. Reconnect in Settings.");return GUI_BACK;}
   char url[4096];
   if(section && strlen(section)>=32){snprintf(notice,cap,"Library identifier is too long.");return GUI_BACK;}
   char chosen[32];snprintf(chosen,sizeof(chosen),"%s",section && *section?section:"all");

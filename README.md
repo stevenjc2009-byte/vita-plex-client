@@ -61,3 +61,5 @@ Use another Wi-Fi network or a phone hotspot to test. Home upload speed and the 
 Official setup: https://support.plex.tv/articles/200289506-remote-access/
 Requirements: https://support.plex.tv/articles/requirements-for-remote-playback-of-personal-media/
 Relay: https://support.plex.tv/articles/216766168-accessing-a-server-through-relay/
+
+01.39 audits the remote connection path. Away mode now blocks a cached home endpoint after discovery fails, including library scans and progress recovery. Startup reconnection happens before progress retries, and cancelled/exit connection checks stop further startup work. Discovery probes share a tested implementation: wrong identities, missing tokens, invalid endpoints, failures and cancellation leave the output settings unchanged. A candidate is committed only after saving succeeds. Sorting chooses the best endpoint even when the caller requests a shortened candidate list. Metadata responses with a declared length must finish completely before parsing. Square retries remote discovery after a failed attempt.

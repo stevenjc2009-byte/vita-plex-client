@@ -37,6 +37,10 @@ for header in kernel/sysmem.h io/fcntl.h net/net.h net/netctl.h net/http.h libss
 done
 "$compiler" -std=c11 -Wall -Wextra -Werror -Wno-misleading-indentation -D__vita__ -I"$scratch/include" -Itools/mock-vita -Isrc tools/http_lifecycle_test.c src/http.c -o "$scratch/http"
 "$scratch/http"
+"$compiler" -std=c11 -Wall -Wextra -Werror -Wno-misleading-indentation -Isrc tools/connection_test.c src/connection.c src/browse.c src/plex_auth.c src/settings.c -o "$scratch/connection"
+"$scratch/connection"
 "$compiler" -std=c11 -Wall -Wextra -Werror -Wno-misleading-indentation -Isrc tools/hls_test.c src/hls.c -o "$scratch/hls"
 "$scratch/hls"
-python3 tools/check-release.py
+python_bin=${PYTHON:-python3}
+command -v "$python_bin" >/dev/null 2>&1 || python_bin=python
+"$python_bin" tools/check-release.py

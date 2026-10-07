@@ -49,6 +49,7 @@ int main(void){
 
  unsigned used=99;unsigned char media[256];declared=1;payload_size=100;close_fail=0;
  http_cancel();assert(!http_media_fetch("http://test",media,sizeof(media),&used,&cancel) && used==100); // Independent of metadata cancellation.
+ declared=1;length_delta=10;http_prepare(5);assert(http_get("http://test","id","xml",(char*)media,sizeof(media))<0 && !media[0] && http_last_error()==-10);length_delta=0;
  length_delta=10;assert(http_media_fetch("http://test",media,sizeof(media),&used,&cancel)==-10 && !used);length_delta=0;
  payload_size=300;assert(http_media_fetch("http://test",media,sizeof(media),&used,&cancel)==-9 && !used);
  declared=0;assert(http_media_fetch("http://test",media,sizeof(media),&used,&cancel)==-9 && !used);

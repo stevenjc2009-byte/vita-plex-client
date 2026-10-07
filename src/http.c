@@ -172,6 +172,8 @@ static int run(const char *url, const char *client_id, const char *accept,
   last_status = status;
   // plex.tv PIN creation answers 201 Created, not 200 — accept any 2xx.
   if (status < 200 || status >= 300) goto out;
+  unsigned long long expected=0;int known_length=!sceHttpGetResponseContentLength(req,&expected);
+  if(known_length && expected>=body_len){last_error=-9;goto out;}
 
   for (;;) {
     if(expired(started)){last_error=-2;goto out;}
@@ -187,6 +189,7 @@ static int run(const char *url, const char *client_id, const char *accept,
     used += (unsigned)n;
     body[used] = 0;
   }
+  if(known_length && expected!=used){last_error=-10;goto out;}
   code = 0;
 
 out:

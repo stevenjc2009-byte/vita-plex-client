@@ -6,6 +6,16 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
+#include <direct.h>
+#define make_test_dir(path) _mkdir(path)
+#define remove_test_dir(path) _rmdir(path)
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#define make_test_dir(path) mkdir(path,0700)
+#define remove_test_dir(path) rmdir(path)
+#endif
 
 int main(void) {
   char token[128] = "previous", small[4], url[1024];
@@ -125,6 +135,9 @@ int main(void) {
   settings_t roundtrip;assert(!settings_load(&roundtrip) && roundtrip.remote_mode==1 && roundtrip.connection_kind==2 && !strcmp(roundtrip.server_id,"machine-1"));
   assert(!plex_build_playback_url(&roundtrip,"/library/metadata/42","session",0,url,sizeof(url)) && strstr(url,"maxVideoBitrate=1000") && strstr(url,"location=wan"));
   assert(!saved);
+  assert(!make_test_dir("config.ini.tmp"));settings_t failed=roundtrip;strcpy(failed.server,"https://new.example:32400");
+  assert(settings_save(&failed)<0);settings_t retained;assert(!settings_load(&retained) && !strcmp(retained.server,roundtrip.server) && !strcmp(retained.server_id,roundtrip.server_id));
+  assert(!remove_test_dir("config.ini.tmp"));
   remove("config.ini");
   assert(!plex_build_music_url(&settings,"/library/metadata/42","session",12000,url,sizeof(url)));
   assert(strstr(url,"/music/:/transcode/universal/start.m3u8?") && strstr(url,"audioCodec=aac") && strstr(url,"offset=12"));

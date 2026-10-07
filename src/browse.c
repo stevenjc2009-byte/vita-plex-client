@@ -208,7 +208,7 @@ void plex_build_timeline_url(const char *server, const char *token, const char *
 int plex_first_part_key(const char *xml,char *out,unsigned cap){const char *p=strstr(xml,"<Part ");if(!p)return -1;const char *end=tag_end(p);if(!end || plex_xml_attr(p,end,"key",out,cap) || strncmp(out,"/library/parts/",15))return -1;return 0;}
 
 int plex_connection_order(const plex_server_t *s,int away,int *order,unsigned cap){
- int n=0,rank[8];if(!s || !order)return 0;
+ int n=0,rank[8],sorted[8];if(!s || !order || !cap)return 0;
  for(int i=0;i<s->connection_count && i<8;i++){
   int secure=!strncmp(s->connections[i],"https://",8),plain=!strncmp(s->connections[i],"http://",7);
   if(!secure && !plain)continue;
@@ -217,11 +217,10 @@ int plex_connection_order(const plex_server_t *s,int away,int *order,unsigned ca
   if(invalid)continue;
   // Remote connections always verify TLS; never send a token over public HTTP.
   if((away && s->local[i]) || ((!s->local[i] || s->relay[i]) && !secure))continue;
-  if((unsigned)n>=cap)break;
   int score=s->relay[i]?0:s->local[i]?(secure?4:3):2,j=n;
-  while(j>0 && rank[j-1]<score){order[j]=order[j-1];rank[j]=rank[j-1];j--;}
-  order[j]=i;rank[j]=score;n++;
- }return n;
+  while(j>0 && rank[j-1]<score){sorted[j]=sorted[j-1];rank[j]=rank[j-1];j--;}
+  sorted[j]=i;rank[j]=score;n++;
+ }if((unsigned)n>cap)n=(int)cap;for(int i=0;i<n;i++)order[i]=sorted[i];return n;
 }
 
 int plex_server_identity(const char *xml,const char *id){

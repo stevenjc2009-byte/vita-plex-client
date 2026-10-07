@@ -39,6 +39,7 @@ static int track(settings_t *s,const char *key,int type){
  if(type==3){s->subtitles=strcmp(id,"0")!=0;if(settings_save(s))return -1;}return 0;
 }
 int session_play(settings_t *s,browse_item_t *original,char *notice,unsigned cap){
+ if(!settings_connection_allowed(s)){snprintf(notice,cap,"Away mode needs a secure remote connection. Reconnect in Settings.");return 0;}
  browse_item_t current=*original;int advanced=0,direct=0;
  for(;;){
   if(!strcmp(current.type,"photo")){char part[256],image_url[2048];const char *image=current.thumb;

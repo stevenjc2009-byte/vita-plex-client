@@ -34,7 +34,7 @@ static int timeline_url(const settings_t *s,const record_t *r,int state,char *ur
 int progress_pending(void){load();int n=0;for(int i=0;i<RECORDS;i++)n+=records[i].rating[0]!=0;return n;}
 int progress_pending_for(const settings_t *s){load();int count=0;for(int i=0;i<RECORDS;i++)if(records[i].rating[0] && !strcmp(records[i].server,s->server) && !strcmp(records[i].client,s->client_id))count++;return count;}
 int progress_discard(const settings_t *s,int others){load();record_t backup[RECORDS];memcpy(backup,records,sizeof(records));for(int i=0;i<RECORDS;i++)if(!others || strcmp(records[i].server,s->server) || strcmp(records[i].client,s->client_id))memset(records+i,0,sizeof(*records));if(persist()){memcpy(records,backup,sizeof(records));return -1;}return 0;}
-int progress_retry(const settings_t *s){load();int result=0;char url[1400],body[2048];
+int progress_retry(const settings_t *s){if(!settings_connection_allowed(s))return -1;load();int result=0;char url[1400],body[2048];
  for(int i=0;i<RECORDS;i++){record_t *r=records+i;if(!r->rating[0] || strcmp(r->server,s->server) || strcmp(r->client,s->client_id))continue;
   gui_message("Resume recovery","Saving pending playback progress","O cancels. Progress remains on this Vita until Plex accepts it.");
   if(timeline_url(s,r,0,url,sizeof(url)) || network_get(url,s->client_id,"text/xml",body,sizeof(body),5)){result=-1;break;}memset(r,0,sizeof(*r));if(persist())result=-1;

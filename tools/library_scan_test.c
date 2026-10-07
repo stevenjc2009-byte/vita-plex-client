@@ -22,4 +22,5 @@ int main(void){settings_t s={0};snprintf(s.server,sizeof(s.server),"http://test:
  reset();choices[0]=2;listing="<MediaContainer><Directory key='93'/></MediaContainer>";library_scan(&s,"93",body,sizeof(body),notice,sizeof(notice));assert(strstr(notice,"does not expose"));
  reset();fail=-1;library_scan(&s,"93",body,sizeof(body),notice,sizeof(notice));assert(strstr(notice,"403"));
  reset();fail=-1;cancelled=1;library_scan(&s,"93",body,sizeof(body),notice,sizeof(notice));assert(strstr(notice,"cancelled"));
+ reset();s.remote_mode=1;assert(library_scan(&s,"93",body,sizeof(body),notice,sizeof(notice))==GUI_BACK && !calls && !choice_at && strstr(notice,"secure remote"));
  puts("Library scan selection, confirmation, scope, status, cancellation and denied access tests passed");return 0;}

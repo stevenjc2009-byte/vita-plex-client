@@ -8,6 +8,7 @@
 #include "gui.h"
 #include "session.h"
 #include "network.h"
+#include "connection.h"
 #include "progress.h"
 #include "performance.h"
 #include "library.h"
@@ -39,6 +40,10 @@ static int save(settings_t *st) {
   if(settings_save(st)<0){settings_unsaved=1;snprintf(notice,sizeof(notice),"Could not save settings. Check free space in ux0:data.");return -1;}settings_unsaved=0;return 0;
 }
 static int request(settings_t *st,const char *target,const char *accept) {
+  size_t base=strlen(st->server);
+  if(!settings_connection_allowed(st) && !strncmp(target,st->server,base) && target[base]=='/'){
+    snprintf(notice,sizeof(notice),"Away mode needs a secure remote connection. Reconnect in Settings.");return -1;}
+
   if(network_get(target,st->client_id,accept,body,sizeof(body),15)==0)return 0;
   if(network_cancelled()){snprintf(notice,sizeof(notice),"Request cancelled.");return -1;}
   int status=network_last_status();
@@ -61,24 +66,12 @@ static int discover(settings_t *st,int automatic) {
   else selected=gui_choice("Choose server",st->remote_mode?"Away from home: secure remote connections only":"Automatic: home, secure remote, then Relay",rows,n);
   if(selected==GUI_QUIT)return -1;
   if(selected>=0) {
-    plex_server_t *chosen=servers+selected;char probe[1024],probe_body[2048],tok[384];plex_url_encode(chosen->token[0]?chosen->token:st->account_token,tok,sizeof(tok));
-    int order[8],number=plex_connection_order(chosen,st->remote_mode,order,8),kind=0;
-    int reachable=0;for(int attempt=0;attempt<number;attempt++){
-      int index=order[attempt];const char *candidate=chosen->connections[index];
-      snprintf(probe,sizeof(probe),"%s/identity?X-Plex-Token=%s",candidate,tok);gui_message("Choose server","Checking server connection","O cancels.");
-      if(!network_get(probe,st->client_id,"text/xml",probe_body,sizeof(probe_body),8)){
-        if(chosen->id[0] && !plex_server_identity(probe_body,chosen->id))continue;
-        snprintf(chosen->url,sizeof(chosen->url),"%s",candidate);kind=chosen->relay[index]?2:chosen->local[index]?0:1;reachable=1;break;}
-      if(network_exit_requested())return -1;
-      if(network_cancelled()){snprintf(notice,sizeof(notice),"Connection check cancelled. Saved server unchanged.");return 0;}
-    }
-    if(!reachable){snprintf(notice,sizeof(notice),"No suitable connection responded. Check Plex Remote Access, Wi-Fi and TLS diagnostics.");return 0;}
-    if(settings_server_url(servers[selected].url)<0){snprintf(notice,sizeof(notice),"The selected server address is invalid.");return 0;}
-    snprintf(st->server,sizeof(st->server),"%s",servers[selected].url);
-    snprintf(st->server_id,sizeof(st->server_id),"%s",servers[selected].id);st->connection_kind=kind;
-    if(servers[selected].token[0])snprintf(st->token,sizeof(st->token),"%s",servers[selected].token);
-    else snprintf(st->token,sizeof(st->token),"%s",st->account_token);
-    if(!save(st))snprintf(notice,sizeof(notice),"Selected %s (%s)",servers[selected].name,kind==2?"Relay / 1 Mbps":kind==1?"remote HTTPS":"home network");return 1;
+    settings_t candidate;int result=connection_probe(st,servers+selected,&candidate);
+    if(result==-2)return -1;
+    if(result==-1){snprintf(notice,sizeof(notice),"Connection check cancelled. Saved server unchanged.");return 0;}
+    if(!result){snprintf(notice,sizeof(notice),"No suitable connection responded. Check Plex Remote Access, Wi-Fi and TLS diagnostics.");return 0;}
+    if(save(&candidate))return 0;
+    *st=candidate;snprintf(notice,sizeof(notice),"Selected %s (%s)",servers[selected].name,st->connection_kind==2?"Relay / 1 Mbps":st->connection_kind==1?"remote HTTPS":"home network");return 1;
   }
   return 0;
 }
@@ -199,9 +192,10 @@ int main(void) {
   gui_message("Plex for Vita","Connecting","Loading your account and saved server settings.");
   sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(),0x10000);
   int net=http_init();if(net<0)snprintf(notice,sizeof(notice),"Network setup failed at %s (0x%X). Square retries.",http_init_stage(),net);
-  if(net>=0 && st.token[0] && progress_pending())progress_retry(&st);
   int depth=0,count=0,total=0,fetch=1,connection_retry=0;
   if(net>=0 && st.token[0] && st.remote_mode && st.server_id[0]){connection_retry=1;discover(&st,1);}
+  if(network_cancelled())fetch=0;
+  if(net>=0 && st.token[0] && settings_connection_allowed(&st) && !network_cancelled() && !network_exit_requested() && progress_pending())progress_retry(&st);
   snprintf(locations[0].title,sizeof(locations[0].title),"Your libraries");
   snprintf(locations[0].path,sizeof(locations[0].path),"/library/sections");
   for(;;) {
@@ -211,7 +205,9 @@ int main(void) {
     if(fetch) {
       gui_message(loc->title,loc->search[0]?"Searching Plex":"Loading library",loc->search[0]?loc->search:st.server);
       count=total=0;
-      if(plex_build_page_url(st.server,st.token,loc->path,loc->search,
+      if(!settings_connection_allowed(&st) && !connection_retry && st.server_id[0]){connection_retry=1;discover(&st,1);}
+      if(!settings_connection_allowed(&st)){snprintf(notice,sizeof(notice),"Away mode needs a secure remote connection. Settings > Reconnect selected server.");}
+      else if(plex_build_page_url(st.server,st.token,loc->path,loc->search,
         strstr(loc->path,"/onDeck")?"":strstr(loc->path,"/recentlyAdded")?sorts[1]:depth && !strstr(loc->path,"/children")?sorts[st.sort]:"",loc->offset,BROWSE_MAX_ITEMS,url,sizeof(url))==0 && !request(&st,url,"text/xml")) {
         connection_retry=0;browse_page_t page={0};
         if(plex_parse_page(body,&page)<0)snprintf(notice,sizeof(notice),"Unexpected server response. Check server address in Settings.");
@@ -229,6 +225,7 @@ int main(void) {
       if(!count && !notice[0])snprintf(notice,sizeof(notice),"%s",loc->search[0]?"No matches. Triangle changes your search.":"No items. Square refreshes; SELECT opens Settings.");
       fetch=0;
     }
+    if(network_exit_requested())break;
     if(settings_unsaved)snprintf(notice,sizeof(notice),"Settings are not saved. Check free space, then save a setting again.");
     char subtitle[240];snprintf(subtitle,sizeof(subtitle),"%s%s%s",depth?(strstr(loc->path,"/onDeck")?"Continue Watching":strstr(loc->path,"/recentlyAdded")?"Recently added":sort_names[st.sort]):"Choose a library to explore",loc->search[0]?"  |  Search: ":"",loc->search);
     gui_view_t view={.title=loc->title,.subtitle=subtitle,.notice=notice,.server=st.server,.token=st.token,
@@ -241,7 +238,7 @@ int main(void) {
     else if(action==GUI_BACK){if(depth){depth--;fetch=1;}else {int r=settings_screen(&st,NULL);if(r==GUI_QUIT)break;fetch=1;}}
     else if(action==GUI_SETTINGS){int old_sort=st.sort;int r=settings_screen(&st,loc->section);if(old_sort!=st.sort){loc->offset=loc->cursor=0;}if(r==GUI_QUIT)break;if(r==GUI_HOME)depth=0;fetch=1;}
     else if(action==GUI_SCAN){const char *section=loc->section;if(!depth && count && view.cursor>=0 && view.cursor<count)section=items[view.cursor].key;if(library_scan(&st,section,body,sizeof(body),notice,sizeof(notice))==GUI_QUIT)break;}
-    else if(action==GUI_REFRESH){notice[0]=0;fetch=1;}
+    else if(action==GUI_REFRESH){notice[0]=0;connection_retry=0;fetch=1;}
     else if(action==GUI_NEXT){loc->offset+=BROWSE_MAX_ITEMS;loc->cursor=0;fetch=1;}
     else if(action==GUI_PREVIOUS){loc->offset=loc->offset>BROWSE_MAX_ITEMS?loc->offset-BROWSE_MAX_ITEMS:0;loc->cursor=0;fetch=1;}
     else if(action==GUI_SEARCH) {
