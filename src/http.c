@@ -23,6 +23,7 @@ static const char *init_stage="network initialization";
 const char *http_init_stage(void){return init_stage;}
 static SceUID request_lock=-1;
 static int active_request=-1;
+static int active_media_request=-1;
 static volatile int cancelled;
 static unsigned deadline_seconds=15;
 void http_prepare(unsigned seconds){__atomic_store_n(&cancelled,0,__ATOMIC_RELEASE);deadline_seconds=seconds?seconds:15;}
@@ -274,11 +275,47 @@ int http_download(const char *url, const char *path,
 int http_download_art(const char *url,const char *path,volatile int *cancel) {
   return download(url,path,NULL,cancel,512*1024);
 }
+void http_media_abort(void){
+ if(request_lock>=0){sceKernelLockMutex(request_lock,1,NULL);if(active_media_request>=0)sceHttpAbortRequest(active_media_request);sceKernelUnlockMutex(request_lock,1);}
+}
+int http_media_fetch(const char *url,void *data,unsigned cap,unsigned *used,volatile int *cancel){
+ int tmpl=-1,conn=-1,req=-1,r=-1,status=0;uint64_t start=sceKernelGetProcessTimeWide();
+ if(!url || !data || !cap || !used || !cancel)return -1;*used=0;
+ if(__atomic_load_n(cancel,__ATOMIC_ACQUIRE))return -2;
+ if(!strncmp(url,"https://",8) && tls_failure)return tls_failure;
+ tmpl=sceHttpCreateTemplate("PlexVita/01.37",SCE_HTTP_VERSION_1_1,SCE_TRUE);if(tmpl<0){r=tmpl;goto out;}
+ conn=sceHttpCreateConnectionWithURL(tmpl,url,SCE_TRUE);if(conn<0){r=conn;goto out;}
+ req=sceHttpCreateRequestWithURL(conn,SCE_HTTP_METHOD_GET,url,0);if(req<0){r=req;goto out;}
+ sceHttpSetAutoRedirect(req,0); // Never forward token-bearing URLs to another server.
+ sceHttpSetResolveTimeOut(req,3000000);sceHttpSetConnectTimeOut(req,3000000);sceHttpSetSendTimeOut(req,3000000);sceHttpSetRecvTimeOut(req,2000000);
+ if(request_lock>=0)sceKernelLockMutex(request_lock,1,NULL);
+ active_media_request=req;int stopped=__atomic_load_n(cancel,__ATOMIC_ACQUIRE);
+ if(request_lock>=0)sceKernelUnlockMutex(request_lock,1);
+ if(stopped){r=-2;goto out;}
+ r=sceHttpSendRequest(req,NULL,0);if(r<0)goto out;
+ r=sceHttpGetStatusCode(req,&status);if(r<0)goto out;if(status!=200){r=-status;goto out;}
+ unsigned long long length=0;int known_length=!sceHttpGetResponseContentLength(req,&length);if(known_length && length>cap){r=-9;goto out;}
+ for(;;){
+  if(__atomic_load_n(cancel,__ATOMIC_ACQUIRE) || sceKernelGetProcessTimeWide()-start>30000000ULL){r=-2;goto out;}
+  if(*used==cap){unsigned char extra;r=sceHttpReadData(req,&extra,1);if(r==0)break;if(r>0)r=-9;goto out;}
+  r=sceHttpReadData(req,(unsigned char*)data+*used,cap-*used);if(r<0)goto out;if(!r)break;*used+=(unsigned)r;
+ }
+ r=known_length && length!=*used?-10:0;
+out:
+ if(request_lock>=0)sceKernelLockMutex(request_lock,1,NULL);
+ if(active_media_request==req)active_media_request=-1;
+ if(req>=0)sceHttpDeleteRequest(req);
+ if(request_lock>=0)sceKernelUnlockMutex(request_lock,1);
+ if(conn>=0)sceHttpDeleteConnection(conn);if(tmpl>=0)sceHttpDeleteTemplate(tmpl);
+ if(r<0)*used=0;return r;
+}
 
 #else
 
 int http_put(const char*u,const char*c,char*b,unsigned n){(void)u;(void)c;(void)b;(void)n;return -1;}
 void http_prepare(unsigned s){(void)s;}void http_cancel(void){}void http_shutdown(void){}
+void http_media_abort(void){}
+int http_media_fetch(const char*u,void*d,unsigned c,unsigned*n,volatile int*x){(void)u;(void)d;(void)c;(void)x;if(n)*n=0;return -1;}
 // Host stubs (self-test never performs network I/O).
 const char *http_init_stage(void){return "desktop";}
 int http_init(void) { return 0; }

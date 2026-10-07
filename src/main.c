@@ -21,9 +21,9 @@
 #include <psp2/net/netctl.h>
 #include "debugScreen.h"
 
-// Decoded posters, font atlases, XML pages and AvPlayer's generic allocations
+// Decoded posters, font atlases, XML pages, bounded stream queues and codec probing
 // share this heap. The default newlib heap is too small for large libraries.
-unsigned int sceLibcHeapSize=32*1024*1024;
+unsigned int sceLibcHeapSize=64*1024*1024;
 typedef struct {
   char title[160],path[384],search[128],section[32];
   int offset,cursor;

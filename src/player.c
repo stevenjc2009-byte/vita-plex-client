@@ -1,4 +1,4 @@
-// SceAvPlayer HLS playback: YVU420 video frames CPU-blitted to the
+// Hardware HLS decoding and local SceAvPlayer playback: YVU420 video frames CPU-blitted to the
 // display framebuffer + PCM16 audio pumped to SceAudioOut.
 // Frame format confirmed against SonicMastr/Vita-Media-Player (real,
 // working player code): pData is YVU420P2 semi-planar, dims from
@@ -27,6 +27,32 @@
 #include "video.h"
 #include "performance.h"
 #include "touch.h"
+#if !defined(PLEX_MOCK_VITA)
+#include "hls_backend.h"
+static int stream_mode;
+static int player_is_active(SceAvPlayerHandle h){return stream_mode?hls_backend_active():sceAvPlayerIsActive(h);}
+static uint64_t player_clock(SceAvPlayerHandle h){return stream_mode?hls_backend_time():sceAvPlayerCurrentTime(h);}
+static int player_pause(SceAvPlayerHandle h){return stream_mode?hls_backend_pause(1):sceAvPlayerPause(h);}
+static int player_resume(SceAvPlayerHandle h){return stream_mode?hls_backend_pause(0):sceAvPlayerResume(h);}
+static int player_video(SceAvPlayerHandle h,SceAvPlayerFrameInfo *frame){
+ if(!stream_mode)return sceAvPlayerGetVideoData(h,frame);hls_video_t v;if(!hls_backend_video(&v))return 0;
+ memset(frame,0,sizeof(*frame));frame->pData=(unsigned char*)v.data;frame->timeStamp=v.stamp;
+ frame->details.video.width=v.width;frame->details.video.height=v.height;frame->details.video.aspectRatio=v.aspect;return 1;
+}
+static int player_audio(SceAvPlayerHandle h,SceAvPlayerFrameInfo *frame){
+ if(!stream_mode)return sceAvPlayerGetAudioData(h,frame);hls_audio_t a;if(!hls_backend_audio(&a))return 0;
+ memset(frame,0,sizeof(*frame));frame->pData=(unsigned char*)a.data;frame->timeStamp=a.stamp;
+ frame->details.audio.channelCount=a.channels;frame->details.audio.sampleRate=a.rate;frame->details.audio.size=a.size;return 1;
+}
+#define sceAvPlayerIsActive player_is_active
+#define sceAvPlayerCurrentTime player_clock
+#define sceAvPlayerPause player_pause
+#define sceAvPlayerResume player_resume
+#define sceAvPlayerGetVideoData player_video
+#define sceAvPlayerGetAudioData player_audio
+#endif
+static const char *failure_stage="decoder startup";
+const char *player_error_stage(void){return failure_stage;}
 
 // Own append-log (main.c owns debug.log truncated at boot; we append).
 static SceUID p_log = -1;
@@ -188,6 +214,14 @@ static int audio_thread(SceSize argc, void *argv) {
 int player_play_hls(const char *hls_url) {
   player_stop();
   final_position=seek_position=0;valid_position=natural_end=0;audio_error=0;paused=0;
+  failure_stage="decoder startup";
+#if !defined(PLEX_MOCK_VITA)
+  if(hls_url && (!strncmp(hls_url,"http://",7) || !strncmp(hls_url,"https://",8))){
+    int result=hls_backend_start(hls_url);failure_stage="HLS worker startup";
+    if(result<0){plog("HLS start FAIL r=0x%X",result);return result;}
+    stream_mode=1;handle=1;conversion_total=conversion_count=conversion_max=0;plog("play HLS hardware backend started");return 0;
+  }
+#endif
   int r = 0;
   if (!av_loaded) {
     r = sceSysmoduleLoadModule(SCE_SYSMODULE_AVPLAYER);
@@ -216,6 +250,7 @@ int player_play_hls(const char *hls_url) {
   plog("play init OK");
 
   r = sceAvPlayerAddSource(handle, hls_url);
+  failure_stage="decoder source open";
   plog("play addsrc r=0x%X", r); // URLs contain the private Plex token
   if (r < 0) { player_stop(); return r; }
 
@@ -263,6 +298,9 @@ int player_run_media(const char *title,unsigned duration,unsigned base_offset,in
   int waited = 0, cancelled = 0;
   while (!stop_flag && sceAvPlayerIsActive(handle) != SCE_TRUE &&
       waited < 450) {
+#if !defined(PLEX_MOCK_VITA)
+    if(stream_mode && hls_backend_error()<0)break;
+#endif
     performance_poll();sceCtrlPeekBufferPositive(0, &pad, 1);
     unsigned pressed = pad.buttons & ~old.buttons;
     old = pad;if(touch_poll(&touch))pressed|=SCE_CTRL_CIRCLE;
@@ -274,8 +312,12 @@ int player_run_media(const char *title,unsigned duration,unsigned base_offset,in
     sceAvPlayerIsActive(handle) == SCE_TRUE, waited * 100, cancelled);
   if (cancelled) { player_stop(); return cancelled==2?1:-4; }
   if (sceAvPlayerIsActive(handle) != SCE_TRUE) {
+    int error=-3;failure_stage="stream startup timeout";
+#if !defined(PLEX_MOCK_VITA)
+    if(stream_mode && hls_backend_error()<0){error=hls_backend_error();failure_stage=hls_backend_stage();plog("HLS FAIL stage=%s r=0x%X",failure_stage,error);}
+#endif
     player_stop();
-    return -3;
+    return error;
   }
 
   if(start_paused && sceAvPlayerPause(handle)>=0)paused=1;start_paused=0;
@@ -342,6 +384,9 @@ int player_run_media(const char *title,unsigned duration,unsigned base_offset,in
     sceDisplayWaitVblankStart();
   }
   plog("play end frames=%d", frames);
+#if !defined(PLEX_MOCK_VITA)
+  if(stream_mode && hls_backend_error()<0){play_error=hls_backend_error();failure_stage=hls_backend_stage();plog("HLS FAIL stage=%s r=0x%X",failure_stage,play_error);}
+#endif
 
   natural_end=!play_error && !audio_error && !restart && !quit && !user_stopped && valid_position && sceAvPlayerIsActive(handle)!=SCE_TRUE;
   if(natural_end && duration && final_position<duration && duration-final_position>5000){natural_end=0;play_error=-8;plog("stream ended before expected duration");}
@@ -367,8 +412,13 @@ void player_stop(void) {
     audio_port = -1;
   }
   if (handle != 0) {
+#if !defined(PLEX_MOCK_VITA)
+    if(stream_mode){hls_backend_stop();stream_mode=0;}else
+#endif
+    {
     sceAvPlayerStop(handle);
     sceAvPlayerClose(handle);
+    }
     handle = 0;
   }
   video_pool_shutdown();free(clean_frame);clean_frame=NULL;
@@ -383,6 +433,7 @@ void player_stop(void) {
 }
 
 #else
+const char *player_error_stage(void){return "desktop stub";}
 
 int player_play_hls(const char *hls_url) {
   (void)hls_url;

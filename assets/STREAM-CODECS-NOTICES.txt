@@ -1,0 +1,22 @@
+Streaming backend dependencies
+
+FFmpeg source: https://github.com/FFmpeg/FFmpeg
+Commit: ea3d24bbe3c58b171e55fe2151fc7ffaca3ab3d2 (FFmpeg n6.0)
+License: LGPL 2.1 or later; see FFmpeg-LGPL-2.1.txt.
+
+Vita hardware codec patch: https://github.com/xfangfang/wiliwili
+Commit: 88e5876bea9502d06f46a8656e3530684d3aaf7d
+Path: scripts/psv/ffmpeg/ffmpeg.patch
+SHA-256: 2d38529d10c74560db3909cf8c2f3e359b128c04fb29f6dd0085770ed81cef6c
+Upstream project license: GPL 3.0; see wiliwili-GPL-3.0.txt.
+
+This build uses MPEG-TS demuxing and the h264_vita/aac_vita hardware
+decoders. CPU H.264 is compiled for stream probing and host tests, but Vita
+playback explicitly selects h264_vita. No Sony firmware files or external
+console plugins are redistributed.
+
+The release's corresponding codec source archive contains the exact FFmpeg
+source archive, hardware patch, original license texts, configure/build recipe,
+and generated configuration. tools/build-stream-codecs.sh reproduces the
+dependency from pinned public sources. The client source and patch accompany
+the VPK; keep those materials with any redistributed build.

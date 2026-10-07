@@ -4,7 +4,7 @@ project(vita-plex-client C)
 # Windows: cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/Users/steve/vita-dev/vitasdk/vitasdk/share/vita.toolchain.cmake -B build
 set(VITA_TITLEID "PLEX00001")
 set(VITA_TITLE "Plex Client")
-set(VITA_VERSION "01.36")
+set(VITA_VERSION "01.37")
 
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
@@ -25,20 +25,34 @@ add_executable(${PROJECT_NAME}
   src/http.c
   src/certs.c
   src/player.c
+  src/hls.c
+  src/hls_backend.c
   src/update.c
   src/gui.c
   src/debugScreen.c
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE src)
+set(PLEX_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/build/deps/ffmpeg-vita" CACHE PATH "Pinned Vita stream codecs")
+if(NOT EXISTS "${PLEX_FFMPEG_ROOT}/lib/libavcodec.a")
+  message(FATAL_ERROR "Build the streaming codecs first: bash tools/build-stream-codecs.sh (VITASDK must be set)")
+endif()
+target_include_directories(${PROJECT_NAME} PRIVATE "${PLEX_FFMPEG_ROOT}/include")
 # Newer binutils emits RELRO segments that vita-elf-create can't map;
 # disable them to keep the classic text/data two-segment layout.
 target_link_options(${PROJECT_NAME} PRIVATE "LINKER:-z,norelro")
-# Segment 0 (code+rodata) must stay well under the 128KB boundary where
-# the data segment is pinned: optimize for size and drop unused sections.
+# Optimize for size and drop unused sections. check-elf.py validates the final
+# SDK-generated code/data layout, including the stream codec archives.
 target_compile_options(${PROJECT_NAME} PRIVATE -Os -Wall -Wextra -Wno-misleading-indentation -Wno-unused-parameter -ffunction-sections -fdata-sections)
 target_link_options(${PROJECT_NAME} PRIVATE "LINKER:--gc-sections")
 target_link_libraries(${PROJECT_NAME}
+  "${PLEX_FFMPEG_ROOT}/lib/libavformat.a"
+  "${PLEX_FFMPEG_ROOT}/lib/libavcodec.a"
+  "${PLEX_FFMPEG_ROOT}/lib/libavutil.a"
+  pthread m
+  SceAudiodec_stub
+  SceVideodec_stub
+  SceCodecEngine_stub
   SceSysmem_stub
   SceTouch_stub
   ScePower_stub
@@ -71,4 +85,7 @@ vita_create_vpk(vita-plex-client-${VITA_VERSION}.vpk ${VITA_TITLEID} ${PROJECT_N
   FILE ${CMAKE_SOURCE_DIR}/assets/font20.bin assets/font20.bin
   FILE ${CMAKE_SOURCE_DIR}/assets/font28.bin assets/font28.bin
   FILE ${CMAKE_SOURCE_DIR}/assets/FONT-LICENSE.txt assets/FONT-LICENSE.txt
+  FILE ${CMAKE_SOURCE_DIR}/assets/STREAM-CODECS-NOTICES.txt assets/STREAM-CODECS-NOTICES.txt
+  FILE ${CMAKE_SOURCE_DIR}/assets/FFmpeg-LGPL-2.1.txt assets/FFmpeg-LGPL-2.1.txt
+  FILE ${CMAKE_SOURCE_DIR}/assets/wiliwili-GPL-3.0.txt assets/wiliwili-GPL-3.0.txt
 )

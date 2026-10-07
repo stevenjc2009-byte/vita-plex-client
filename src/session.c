@@ -78,7 +78,7 @@ int session_play(settings_t *s,browse_item_t *original,char *notice,unsigned cap
     else if(position)save_failed=1;
     if(position){current.view_offset=position;if(!advanced)original->view_offset=position;}
     if(r==2){restart_paused=player_was_paused();offset=player_seek_position();result=2;}else result=r;
-    if(r<0)snprintf(notice,cap,"Playback failed (0x%X). See debug.log.",r);
+    if(r<0)snprintf(notice,cap,"Playback failed at %s (0x%X). See debug.log.",player_error_stage(),r);
    }else result=-1;
    plex_url_encode(s->token,tok,sizeof(tok));plex_url_encode(session,sid,sizeof(sid));snprintf(stop,sizeof(stop),"%s/%s/:/transcode/universal/stop?session=%s&X-Plex-Token=%s",s->server,music?"music":"video",sid,tok);
    gui_message(current.title,"Closing playback session","O cancels.");if(network_get(stop,s->client_id,"text/xml",body,sizeof(body),5)){if(result>=0 && result!=2)snprintf(notice,cap,"Stream cleanup failed. Plex may keep the session briefly.");}

@@ -39,6 +39,9 @@ jobs:
           sys.exit(1 if bad else 0)
           "
 
+      - name: Build pinned stream codecs
+        run: bash tools/build-stream-codecs.sh
+
       - name: Configure
         run: cmake -B build -DCMAKE_TOOLCHAIN_FILE=${VITASDK}/share/vita.toolchain.cmake
 
@@ -55,8 +58,13 @@ jobs:
           arm-vita-eabi-readelf -l build/vita-plex-client | head -30
           arm-vita-eabi-readelf -S build/vita-plex-client | head -40
 
+      - name: Package corresponding sources
+        run: python3 tools/package-codec-sources.py
+
       - name: Release VPK
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/*.vpk
+          files: |
+            build/*.vpk
+            build/*source*.zip

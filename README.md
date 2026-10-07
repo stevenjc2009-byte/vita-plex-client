@@ -1,5 +1,7 @@
 # Plex for PlayStation Vita
 
+01.37 replaces the rejected native HLS URL source with application-managed HLS download and MPEG-TS demuxing, followed by explicit Vita H.264/AAC hardware codecs. It follows Plex master playlists, inherits authentication only within the same server origin, bounds downloads and queues, and stops the media request independently of metadata/progress requests. Error notices identify the failing stage; native codec errors are recorded without URLs or tokens. Local desktop decoding and cross-build checks do not prove physical Vita playback.
+
 01.36 fixes a native decoder handle being mistaken for a negative error: opaque handles such as `0x81400280` are valid even though the SDK exposes a signed integer type. The player now uses an empty handle of zero and separately recognizes AvPlayer error codes. High-bit handles are retained through playback, audio pumping and cleanup. Artwork retains its aspect ratio in both grids and details, including wide episode thumbnails; empty space is padded instead of stretching the image.
 
 Browse libraries, search movies and series, and play H.264/AAC streams prepared by your Plex server on a jailbroken Vita.
@@ -28,7 +30,7 @@ Music tracks can request AAC stereo HLS and use the audio-only player. Photos us
 
 ## Build and test
 
-Set VITASDK to your SDK, then configure with its share/vita.toolchain.cmake and build using CMake. The VPK filename includes the version. Windows runners: tools/run-regression-tests.ps1, run-player-tests.ps1, run-core-tests.ps1 and run-http-tests.ps1; supply -Compiler if gcc is not on PATH. Linux: sh tools/run-tests.sh.
+Set VITASDK to your SDK and run `bash tools/build-stream-codecs.sh` to build the pinned codec dependencies, then configure with its share/vita.toolchain.cmake and build using CMake. The VPK filename includes the version. Windows runners: tools/run-regression-tests.ps1, run-player-tests.ps1, run-core-tests.ps1 and run-http-tests.ps1; supply -Compiler if gcc is not on PATH. Linux: sh tools/run-tests.sh.
 
 Release CI runs these tests, validates the release tag and matching version definitions, and uses a digest-pinned VitaSDK container. Update APP_VERSION and VITA_VERSION together, then tag v followed by that version. CI release execution has to be verified on GitHub; local tests do not run that service.
 
@@ -43,3 +45,7 @@ The progress journal now holds 32 entries and reads previous eight-entry journal
 Network failure notices include the initialization/worker stage and the actual error; debug.log records these without URLs or tokens. Already-loaded modules are retained rather than unloaded. LAN HTTP browsing remains usable if optional HTTPS initialization fails; HTTPS is rejected safely in that case. Thread creation also tries the documented default priority if its preferred priority cannot be used.
 
 Power callbacks rebuild an active stream at its last observed position after resume, preserve pause state across restarts, and reapply the selected boost mode. Physical suspend/reconnect behavior still needs validation. A premature decoder shutdown more than five seconds before the metadata duration ends returns an error and suppresses autoplay. Diagnostics/logs report the CPU-core mask actually observed during conversion (F means cores 0-3; 7 means cores 0-2); this is distinct from merely accepting a thread affinity request. A rejected fourth-core affinity uses a balanced three-core conversion pool.
+
+The streaming codec build pins FFmpeg n6.0 and the wiliwili Vita codec patch by commit and SHA-256. Dependency notices and licenses are included in the VPK. The release includes the exact dependency sources and patch for rebuilding; no Sony firmware, BEAV library or overclock plugin is bundled. The current media backend supports MPEG-TS HLS with H.264 video and AAC mono/stereo audio up to 720p, with 8 MiB segments and a 512 KiB playlist limit. Unsupported encrypted, fragmented-MP4, discontinuous or cross-server playlists fail explicitly. The selected first variant is prepared by Plex at the requested quality.
+
+`tools/hls_backend_test.c` exercises the real demux/decoder worker with local MPEG-TS HLS fixtures on desktop. Link it, src/hls_backend.c and src/hls.c against FFmpeg n6.0 avformat/avcodec/avutil (mpegts demuxer, H.264/AAC decoders and parsers), pthread and math. Pass a folder containing index.m3u8 and referenced segments. Desktop tests use software codecs; Vita builds select h264_vita and aac_vita explicitly.

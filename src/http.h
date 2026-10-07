@@ -26,3 +26,8 @@ void http_shutdown(void);
 int http_put(const char *url,const char *client,char *body,unsigned cap);
 
 const char *http_init_stage(void);
+
+// Independent playback transport; ordinary metadata/progress cancellation does
+// not abort it. Returns 0, or the actual HTTP/library failure; caps binary data.
+int http_media_fetch(const char *url,void *data,unsigned cap,unsigned *used,volatile int *cancel);
+void http_media_abort(void);
