@@ -235,6 +235,17 @@ int main(void) {
   sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(),0x10000);
   int net=http_init();if(net<0)snprintf(notice,sizeof(notice),"Network setup failed at %s (0x%X). Square retries.",http_init_stage(),net);
   int depth=0,count=0,total=0,fetch=1,connection_retry=0;
+  // Identify a manually configured endpoint before journaling checkpoints.
+  // This lets the first subsequent LAN/WAN change use a stable server scope.
+  if(net>=0 && st.token[0] && !st.server_id[0] && settings_connection_allowed(&st)){
+    if(!plex_build_page_url(st.server,st.token,"/identity","","",0,1,url,sizeof(url)) && !request(&st,url,"text/xml")){
+      const char *tag=strstr(body,"<MediaContainer"),*end=tag?strchr(tag,'>'):NULL;char id[128];
+      if(end && !plex_xml_attr(tag,end,"machineIdentifier",id,sizeof(id)) && id[0] && !strpbrk(id,"\r\n")){
+        settings_t candidate=st;snprintf(candidate.server_id,sizeof(candidate.server_id),"%s",id);if(candidate.remote_mode)candidate.connection_kind=1;
+        if(!save(&candidate)){progress_rebind(&st,&candidate);st=candidate;}
+      }
+    }
+  }
   if(net>=0 && st.token[0] && st.remote_mode && st.server_id[0]){connection_retry=1;discover(&st,1);}
   if(network_cancelled())fetch=0;
   if(net>=0 && st.token[0] && settings_connection_allowed(&st) && !network_cancelled() && !network_exit_requested() && progress_pending())progress_retry(&st);
