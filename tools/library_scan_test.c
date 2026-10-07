@@ -13,6 +13,8 @@ int network_last_status(void){return fail?403:200;}int network_last_error(void){
 static void reset(void){choice_at=calls=fail=cancelled=scan=0;memset(choices,0,sizeof(choices));listing="<MediaContainer><Directory key='93' title='Movies' refreshing='0'/></MediaContainer>";}
 int main(void){settings_t s={0};snprintf(s.server,sizeof(s.server),"http://test:32400");snprintf(s.token,sizeof(s.token),"a&b");char body[4096],notice[256];
  reset();assert(library_scan(&s,"93",body,sizeof(body),notice,sizeof(notice))==GUI_BACK);assert(scan==1 && calls==1 && strstr(notice,"Scan requested"));
+ assert(library_scan_active());listing="<MediaContainer><Directory key='93' refreshing='1'/></MediaContainer>";assert(library_scan_poll(&s,body,sizeof(body),notice,sizeof(notice))==1 && library_scan_active());
+ listing="<MediaContainer><Directory key='93' refreshing='0'/></MediaContainer>";assert(!library_scan_poll(&s,body,sizeof(body),notice,sizeof(notice)) && !library_scan_active() && strstr(notice,"finished"));
  reset();choices[0]=1;choices[1]=1;choices[2]=0;library_scan(&s,NULL,body,sizeof(body),notice,sizeof(notice));assert(scan==1 && calls==2);
  reset();choices[1]=1;library_scan(&s,NULL,body,sizeof(body),notice,sizeof(notice));assert(!calls);
  reset();choices[0]=GUI_QUIT;assert(library_scan(&s,"93",body,sizeof(body),notice,sizeof(notice))==GUI_QUIT && !calls);

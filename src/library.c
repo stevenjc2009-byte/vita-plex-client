@@ -5,6 +5,7 @@
 #include "http.h"
 #include <stdio.h>
 #include <string.h>
+static int watching,polls;static char watched_server[256],watched_section[32];
 static int request(const settings_t *st,const char *url,char *body,unsigned size,char *notice,unsigned cap){
  int result=network_get(url,st->client_id,"text/xml",body,size,15);
  if(result)snprintf(notice,cap,network_cancelled()?"Request cancelled.":"Library request failed (HTTP %d / error 0x%X).",network_last_status(),network_last_error());return result;
@@ -40,5 +41,16 @@ int library_scan(settings_t *st,const char *section,char *body,unsigned body_siz
   char path[128];snprintf(path,sizeof(path),"/library/sections/%s/refresh",chosen);
   if(plex_build_page_url(st->server,st->token,path,"","",0,1,url,sizeof(url)))return GUI_BACK;
   gui_message("Scan library files","Starting server scan","Scanning continues on Plex after you leave this screen.");
-  if(!request(st,url,body,body_size,notice,cap))snprintf(notice,cap,"Scan requested. Check scan status, then Square refreshes this list.");return GUI_BACK;
+  if(!request(st,url,body,body_size,notice,cap)){watching=1;polls=0;snprintf(watched_server,sizeof(watched_server),"%s",st->server);snprintf(watched_section,sizeof(watched_section),"%s",chosen);snprintf(notice,cap,"Scan requested. Status and listings refresh automatically.");}return GUI_BACK;
+}
+
+int library_scan_active(void){return watching;}
+int library_scan_poll(const settings_t *st,char *body,unsigned size,char *notice,unsigned cap){
+ if(!watching)return 0;if(strcmp(watched_server,st->server) || !settings_connection_allowed(st)){watching=0;return 0;}
+ char url[4096];if(plex_build_page_url(st->server,st->token,"/library/sections","","",0,40,url,sizeof(url)) || request(st,url,body,size,notice,cap)){watching=0;return -1;}
+ int active=0,matched=0,known=0;const char *p=body;
+ while((p=strstr(p,"<Directory"))){const char *end=strchr(p,'>');if(!end)break;char key[32],refresh[16];plex_xml_attr(p,end,"key",key,sizeof(key));plex_xml_attr(p,end,"refreshing",refresh,sizeof(refresh));
+  if(!strcmp(watched_section,"all") || !strcmp(watched_section,key)){matched++;known+=refresh[0]!=0;active+=!strcmp(refresh,"1") || !strcmp(refresh,"true");}p=end+1;}
+ polls++;if(!matched || (known==matched && !active) || (known!=matched && polls>=3) || polls>=120)watching=0;
+ snprintf(notice,cap,"%s",active?"Plex is scanning; listings refresh automatically.":known==matched?"Scan finished. Listings refreshed.":"Plex does not expose scan status; listings refreshed.");return watching;
 }

@@ -10,3 +10,7 @@ int progress_pending_for(const settings_t *settings);
 // others=1 discards only records outside this server/client; 0 discards all.
 int progress_discard(const settings_t *settings,int others);
 int progress_durable(void);
+
+unsigned progress_position(const settings_t *s,const char *rating);
+
+int progress_rebind(const settings_t *old,const settings_t *next);

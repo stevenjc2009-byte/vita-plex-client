@@ -8,6 +8,8 @@ assert(hls_segment(p,UINT64_MAX,out,sizeof(out),&seq)==1 && seq==12 && !strcmp(o
 assert(hls_segment(p,13,out,sizeof(out),&seq)==1 && seq==13);
 assert(hls_segment(p,14,out,sizeof(out),&seq)==2);
 assert(hls_segment(p,11,out,sizeof(out),&seq)==-2);
+assert(hls_segment("#EXTM3U\n#EXT-X-DISCONTINUITY-SEQUENCE:4\n#EXTINF:1,\na.ts\n#EXT-X-ENDLIST\n",0,out,sizeof(out),&seq)==1);
+assert(hls_segment("#EXTM3U\n#EXT-X-DISCONTINUITY\n#EXTINF:1,\na.ts\n",0,out,sizeof(out),&seq)<0);
 assert(hls_segment("#EXTM3U\n#EXTINF:2,\na.ts\n",1,out,sizeof(out),&seq)==0);
 assert(hls_segment("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128\n",0,out,sizeof(out),&seq)<0);
 assert(hls_segment("#EXTM3U\n#EXT-X-MAP:URI=init\n",0,out,sizeof(out),&seq)<0);

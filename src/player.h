@@ -16,3 +16,5 @@ int player_run_media(const char *title,unsigned duration,unsigned offset,int aud
 void player_start_paused(int paused);
 int player_was_paused(void);
 const char *player_error_stage(void);
+
+void player_adaptive(int enabled);

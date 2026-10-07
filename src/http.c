@@ -302,7 +302,8 @@ int http_media_fetch(const char *url,void *data,unsigned cap,unsigned *used,vola
  r=sceHttpGetStatusCode(req,&status);if(r<0)goto out;if(status!=200){r=-status;goto out;}
  unsigned long long length=0;int known_length=!sceHttpGetResponseContentLength(req,&length);if(known_length && length>cap){r=-9;goto out;}
  for(;;){
-  if(__atomic_load_n(cancel,__ATOMIC_ACQUIRE) || sceKernelGetProcessTimeWide()-start>30000000ULL){r=-2;goto out;}
+  if(__atomic_load_n(cancel,__ATOMIC_ACQUIRE)){r=-2;goto out;}
+  if(sceKernelGetProcessTimeWide()-start>30000000ULL){r=HTTP_MEDIA_TIMEOUT;goto out;}
   if(*used==cap){unsigned char extra;r=sceHttpReadData(req,&extra,1);if(r==0)break;if(r>0)r=-9;goto out;}
   r=sceHttpReadData(req,(unsigned char*)data+*used,cap-*used);if(r<0)goto out;if(!r)break;*used+=(unsigned)r;
  }

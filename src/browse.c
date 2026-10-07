@@ -93,7 +93,7 @@ int plex_parse_items_offset(const char *xml, const char *tag, browse_item_t *out
     const char *start = ++p;
     while (isalnum((unsigned char)*p)) p++;
     size_t len = (size_t)(p - start);
-    int dir = len == 9 && !strncmp(start, "Directory", 9);
+    int dir = (len == 9 && !strncmp(start, "Directory", 9)) || (len==8 && !strncmp(start,"Playlist",8));
     int video = len == 5 && !strncmp(start, "Video", 5);
     int other = (len == 5 && !strncmp(start, "Track", 5)) || (len == 5 && !strncmp(start, "Photo", 5));
     if (!isspace((unsigned char)*p) || (tag ? len != strlen(tag) || strncmp(start, tag, len) : !dir && !video && !other)) continue;
@@ -171,7 +171,7 @@ int plex_parse_servers(const char *xml, plex_server_t *out, int max) {
         plex_xml_attr(c, ce, "local", local, sizeof(local));
         plex_xml_attr(c,ce,"relay",relay,sizeof(relay));
         if (plex_xml_attr(c, ce, "uri", uri, sizeof(uri)) == 0) {
-          if(server.connection_count<8){int i=server.connection_count++;snprintf(server.connections[i],256,"%s",uri);server.local[i]=!strcmp(local,"1");server.relay[i]=!strcmp(relay,"1");}
+          if(server.connection_count<PLEX_MAX_CONNECTIONS){int i=server.connection_count++;snprintf(server.connections[i],256,"%s",uri);server.local[i]=!strcmp(local,"1");server.relay[i]=!strcmp(relay,"1");}
           int score = (!strcmp(local, "1") ? 4 : 0) + (!strncmp(uri, "http://", 7) ? 2 : 0);
           if (score > best) { best = score; snprintf(server.url, sizeof(server.url), "%s", uri); }
         }
@@ -208,8 +208,8 @@ void plex_build_timeline_url(const char *server, const char *token, const char *
 int plex_first_part_key(const char *xml,char *out,unsigned cap){const char *p=strstr(xml,"<Part ");if(!p)return -1;const char *end=tag_end(p);if(!end || plex_xml_attr(p,end,"key",out,cap) || strncmp(out,"/library/parts/",15))return -1;return 0;}
 
 int plex_connection_order(const plex_server_t *s,int away,int *order,unsigned cap){
- int n=0,rank[8],sorted[8];if(!s || !order || !cap)return 0;
- for(int i=0;i<s->connection_count && i<8;i++){
+ int n=0,rank[PLEX_MAX_CONNECTIONS],sorted[PLEX_MAX_CONNECTIONS];if(!s || !order || !cap)return 0;
+ for(int i=0;i<s->connection_count && i<PLEX_MAX_CONNECTIONS;i++){
   int secure=!strncmp(s->connections[i],"https://",8),plain=!strncmp(s->connections[i],"http://",7);
   if(!secure && !plain)continue;
   const char *host=s->connections[i]+(secure?8:7);int invalid=!*host;

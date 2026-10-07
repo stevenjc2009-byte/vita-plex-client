@@ -29,6 +29,7 @@
 #include "touch.h"
 #if !defined(PLEX_MOCK_VITA)
 #include "hls_backend.h"
+#include <psp2/net/netctl.h>
 static int stream_mode;
 static int player_is_active(SceAvPlayerHandle h){return stream_mode?hls_backend_active():sceAvPlayerIsActive(h);}
 static uint64_t player_clock(SceAvPlayerHandle h){return stream_mode?hls_backend_time():sceAvPlayerCurrentTime(h);}
@@ -96,7 +97,8 @@ static int display_index;
 static uint64_t conversion_total;static unsigned conversion_count,conversion_max;
 static volatile int paused;
 static volatile int audio_error;
-static unsigned audio_seen,last_audio;static int start_paused;
+static unsigned audio_seen,last_audio;static int adapt_enabled;
+void player_adaptive(int enabled){adapt_enabled=enabled;}static int start_paused;
 void player_start_paused(int state){start_paused=state;}
 int player_was_paused(void){return paused;}
 
@@ -167,6 +169,12 @@ static int audio_thread(SceSize argc, void *argv) {
     SceAvPlayerFrameInfo fr;
     memset(&fr, 0, sizeof(fr));
     if (!sceAvPlayerGetAudioData(handle, &fr) || !fr.pData) {
+#if !defined(PLEX_MOCK_VITA)
+      if(stream_mode && hls_backend_audio_eof()){
+        if(acc_frames && audio_port>=0){memset(acc+acc_frames*channels,0,(PORT_SAMPLES-acc_frames)*channels*sizeof(short));int rc=sceAudioOutOutput(audio_port,acc);if(rc<0)audio_error=rc;}
+        return 0;
+      }
+#endif
       sceKernelDelayThread(5000);
       continue;
     }
@@ -219,7 +227,7 @@ int player_play_hls(const char *hls_url) {
   if(hls_url && (!strncmp(hls_url,"http://",7) || !strncmp(hls_url,"https://",8))){
     int result=hls_backend_start(hls_url);failure_stage="HLS worker startup";
     if(result<0){plog("HLS start FAIL r=0x%X",result);return result;}
-    stream_mode=1;handle=1;conversion_total=conversion_count=conversion_max=0;plog("play HLS hardware backend started");return 0;
+    failure_stage="HLS playback";stream_mode=1;handle=1;conversion_total=conversion_count=conversion_max=0;plog("play HLS hardware backend started");return 0;
   }
 #endif
   int r = 0;
@@ -334,18 +342,29 @@ int player_run_media(const char *title,unsigned duration,unsigned base_offset,in
   }
 
   int frames = 0;
-  int quit=0,user_stopped=0,show_controls=180,restart=0,play_error=0,redraw=1,last_visible=-1;
+  int quit=0,user_stopped=0,show_controls=180,restart=0,play_error=0,redraw=1,last_visible=-1,show_diagnostics=0;
   unsigned last_second=~0u,last_progress=0;int progress_sent=0;
-  uint64_t last_frame=sceKernelGetProcessTimeWide();
+  uint64_t last_frame=sceKernelGetProcessTimeWide(),buffer_since=0;
   while (!stop_flag) {
     performance_poll();if(performance_take_resume()){seek_position=valid_position?final_position:base_offset;restart=1;break;}
-    if(!paused && sceAvPlayerIsActive(handle)!=SCE_TRUE)break;
-    if(audio_error){plog("audio output FAIL 0x%X",audio_error);break;}
+#if !defined(PLEX_MOCK_VITA)
+    if(stream_mode){
+      int net_state=-1;if(!sceNetCtlInetGetState(&net_state) && net_state!=SCE_NETCTL_STATE_CONNECTED){failure_stage="Wi-Fi disconnected";play_error=-12;break;}
+      if(hls_backend_buffering()){
+        if(!buffer_since){buffer_since=sceKernelGetProcessTimeWide();show_controls=180;redraw=1;}
+        if(adapt_enabled && sceKernelGetProcessTimeWide()-buffer_since>6000000){seek_position=valid_position?final_position:base_offset;restart=2;break;}
+      }else if(buffer_since){buffer_since=0;redraw=1;}
+    }
+#else
+    (void)buffer_since;(void)adapt_enabled;
+#endif
+    if(!paused && sceAvPlayerIsActive(handle)!=SCE_TRUE){if(audio_only && __atomic_load_n(&audio_seen,__ATOMIC_ACQUIRE)){valid_position=1;final_position=base_offset+(unsigned)sceAvPlayerCurrentTime(handle);}break;}
+    if(audio_error){failure_stage="audio output";plog("audio output FAIL 0x%X",audio_error);break;}
     if (!audio_only && sceAvPlayerGetVideoData(handle, &vf) && vf.pData) {
       if (!frames)
         plog("play first frame %ux%u", vf.details.video.width,
           vf.details.video.height);
-      if(blit_frame(&vf)){plog("invalid video frame %ux%u",vf.details.video.width,vf.details.video.height);play_error=-7;break;}
+      if(blit_frame(&vf)){plog("invalid video frame %ux%u",vf.details.video.width,vf.details.video.height);failure_stage="video conversion";play_error=-7;break;}
       frames++;
       if(!(frames%120))plog("render conversion avg=%uus max=%uus frames=%d stamp=%llu clock=%llu cores=%X",conversion_count?(unsigned)(conversion_total/conversion_count):0,conversion_max,frames,(unsigned long long)vf.timeStamp,(unsigned long long)sceAvPlayerCurrentTime(handle),video_observed_cores());
       last_frame=sceKernelGetProcessTimeWide();
@@ -357,12 +376,22 @@ int player_run_media(const char *title,unsigned duration,unsigned base_offset,in
     int visible=show_controls>0;unsigned second=final_position/1000;
     if(visible!=last_visible || (visible && second!=last_second))redraw=1;
     if(redraw){display_index^=1;framebuf=display_frames[display_index];memcpy(framebuf,clean_frame,FB_W*FB_H*4);
-      if(visible)gui_player_overlay(framebuf,title,final_position,duration,paused,NULL);present();redraw=0;last_visible=visible;last_second=second;}
+      char diagnostic[240]={0};
+#if !defined(PLEX_MOCK_VITA)
+      if(stream_mode && show_diagnostics)hls_backend_diagnostics(diagnostic,sizeof(diagnostic));
+#endif
+      if(visible)gui_player_overlay(framebuf,title,final_position,duration,paused,diagnostic[0]?diagnostic:
+#if !defined(PLEX_MOCK_VITA)
+        stream_mode && hls_backend_buffering()?"Buffering":
+#endif
+        NULL);present();redraw=0;last_visible=visible;last_second=second;}
     if(show_controls>0 && !paused && !audio_only)show_controls--;
     if(progress_callback && valid_position && (second>=last_progress+10 || !progress_sent)){progress_callback(final_position,paused?2:1);last_progress=second;progress_sent=1;}
     sceCtrlPeekBufferPositive(0, &pad, 1);
     unsigned pressed = pad.buttons & ~old.buttons;
-    old = pad;if(touch_poll(&touch)){if(!show_controls)pressed|=SCE_CTRL_TRIANGLE;else if(touch.y>=FB_H-80){pressed|=touch.x<240?SCE_CTRL_CROSS:touch.x<420?SCE_CTRL_CIRCLE:touch.x<610?SCE_CTRL_LEFT:touch.x<800?SCE_CTRL_RIGHT:SCE_CTRL_TRIANGLE;}else pressed|=SCE_CTRL_TRIANGLE;}
+    old = pad;if(touch_poll(&touch)){if(!show_controls)pressed|=SCE_CTRL_TRIANGLE;else if(touch.y<64 && touch.x>760)pressed|=SCE_CTRL_SQUARE;else if(touch.y>=FB_H-55 && touch.y<=FB_H-35 && duration){unsigned x=touch.x<24?0:touch.x>936?912:touch.x-24;seek_position=(unsigned)((uint64_t)duration*x/912);if(seek_position>=duration)seek_position=duration>1000?duration-1000:0;restart=1;break;}else if(touch.y>=FB_H-80){pressed|=touch.x<240?SCE_CTRL_CROSS:touch.x<420?SCE_CTRL_CIRCLE:touch.x<610?SCE_CTRL_LEFT:touch.x<800?SCE_CTRL_RIGHT:SCE_CTRL_TRIANGLE;}else pressed|=SCE_CTRL_TRIANGLE;}
+    if(pressed&SCE_CTRL_SQUARE){seek_position=valid_position?final_position:base_offset;restart=3;break;}
+    if(pressed&SCE_CTRL_SELECT){show_diagnostics=!show_diagnostics;show_controls=180;redraw=1;}
     if (pressed & SCE_CTRL_START) {quit=1;break;}
     if (pressed & SCE_CTRL_CIRCLE){user_stopped=1;break;}
     if (pressed & SCE_CTRL_CROSS) {
@@ -380,7 +409,7 @@ int player_run_media(const char *title,unsigned duration,unsigned base_offset,in
       restart=1;break; // rebuild HLS at absolute time, including before the resume base
     }
     // A stream that never produces video must not be reported as success.
-    if(!paused && (audio_only && __atomic_load_n(&audio_seen,__ATOMIC_ACQUIRE)?(unsigned)((unsigned)sceKernelGetProcessTimeWide()-__atomic_load_n(&last_audio,__ATOMIC_ACQUIRE))>45000000u:sceKernelGetProcessTimeWide()-last_frame>45000000ULL)){plog("video stalled");play_error=-5;break;}
+    if(!paused && (audio_only && __atomic_load_n(&audio_seen,__ATOMIC_ACQUIRE)?(unsigned)((unsigned)sceKernelGetProcessTimeWide()-__atomic_load_n(&last_audio,__ATOMIC_ACQUIRE))>45000000u:sceKernelGetProcessTimeWide()-last_frame>45000000ULL)){failure_stage="media delivery timeout";plog("video stalled");play_error=-5;break;}
     sceDisplayWaitVblankStart();
   }
   plog("play end frames=%d", frames);
@@ -389,9 +418,12 @@ int player_run_media(const char *title,unsigned duration,unsigned base_offset,in
 #endif
 
   natural_end=!play_error && !audio_error && !restart && !quit && !user_stopped && valid_position && sceAvPlayerIsActive(handle)!=SCE_TRUE;
-  if(natural_end && duration && final_position<duration && duration-final_position>5000){natural_end=0;play_error=-8;plog("stream ended before expected duration");}
+  if(natural_end && duration && final_position<duration && duration-final_position>5000){natural_end=0;failure_stage="premature stream end";play_error=-8;plog("stream ended before expected duration");}
+#if !defined(PLEX_MOCK_VITA)
+  if(natural_end && clean_frame)gui_player_end_frame(clean_frame);
+#endif
   player_stop();
-  return play_error?play_error:audio_error?audio_error:restart?2:quit?1:(frames || (audio_only && audio_seen) || user_stopped)?0:-5;
+  return play_error?play_error:audio_error?audio_error:restart==3?4:restart==2?3:restart?2:quit?1:(frames || (audio_only && audio_seen) || user_stopped)?0:-5;
 }
 int player_run(const char *title,unsigned duration,unsigned offset){return player_run_media(title,duration,offset,0);}
 int player_run_blocking(void){return player_run("Now playing",0,0);}
@@ -439,6 +471,7 @@ int player_play_hls(const char *hls_url) {
   (void)hls_url;
   return -1; // host stub: no AvPlayer
 }
+void player_adaptive(int enabled){(void)enabled;}
 void player_start_paused(int state){(void)state;}int player_was_paused(void){return 0;}
 int player_active(void) { return 0; }
 int player_run_media(const char*t,unsigned d,unsigned o,int a){(void)t;(void)d;(void)o;(void)a;return -1;}

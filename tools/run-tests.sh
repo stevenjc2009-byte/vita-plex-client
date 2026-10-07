@@ -21,6 +21,13 @@ for header in audioout.h avplayer.h ctrl.h display.h kernel/sysmem.h io/fcntl.h 
 done
 "$compiler" -std=c11 -Wall -Wextra -Werror -Wno-misleading-indentation -pthread -D__vita__ -DPLEX_MOCK_VITA -Dmemalign=mock_memalign -I"$scratch/include" -Itools/mock-vita -Isrc tools/player_lifecycle_test.c src/player.c src/video.c src/touch.c -o "$scratch/player"
 "$scratch/player"
+mkdir -p "$scratch/include/psp2/net"
+printf '#include <psp2/mock.h>\n#define SCE_NETCTL_STATE_CONNECTED 1\nint sceNetCtlInetGetState(int*);\n' > "$scratch/include/psp2/net/netctl.h"
+for component in video touch; do
+ "$compiler" -std=c11 -Wall -Wextra -Werror -Wno-misleading-indentation -pthread -D__vita__ -DPLEX_MOCK_VITA -I"$scratch/include" -Itools/mock-vita -Isrc -c "src/$component.c" -o "$scratch/$component.o"
+done
+"$compiler" -std=c11 -Wall -Wextra -Werror -Wno-misleading-indentation -pthread -D__vita__ -Dmemalign=mock_memalign -I"$scratch/include" -Itools/mock-vita -Isrc tools/player_stream_test.c src/player.c "$scratch/video.o" "$scratch/touch.o" -o "$scratch/player-stream"
+"$scratch/player-stream"
 "$compiler" -std=c11 -Os -Wall -Wextra -Werror -Wno-misleading-indentation -Wno-unused-parameter -pthread -D__vita__ -DPLEX_MOCK_VITA -DPLEX_TOUCH_EXTERNAL -I"$scratch/include" -Itools/mock-vita -Isrc tools/gui_touch_test.c src/gui.c src/text.c src/touch.c src/plex_auth.c -o "$scratch/gui"
 "$scratch/gui"
 printf '#include <psp2/mock.h>\n' > "$scratch/include/psp2/power.h"

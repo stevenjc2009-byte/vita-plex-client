@@ -14,7 +14,7 @@
 void settings_defaults(settings_t *s) {
   memset(s, 0, sizeof(*s));
   snprintf(s->server, sizeof(s->server), "http://192.168.0.32:32400");
-  s->bitrate = 2000;
+  s->bitrate = 2000;s->remote_bitrate=2000;s->relay_bitrate=1000;s->adaptive=1;
   s->resume = 1;
   s->performance = 2; // requested boosted launch; plugin may enforce its own profile
   s->subtitles = 1; // server default
@@ -33,22 +33,28 @@ void settings_ensure_client_id(settings_t *s) {
     "vita-%08x-4b21-plex", seed);
 }
 
-int settings_load(settings_t *s) {
+static int load_path(settings_t *s,const char *path) {
   settings_defaults(s);
   settings_ensure_client_id(s);
-  FILE *f = fopen(CONFIG_PATH, "r");
-  if (!f) f = fopen(CONFIG_PATH ".bak", "r");
+  FILE *f = fopen(path, "r");
   if (!f) return -1;
-  char line[512];
+  char line[512];int server_seen=0,client_seen=0,complete=0,version=0,invalid=0;
   while (fgets(line, sizeof(line), f)) {
+    if(!strchr(line,'\n') && !feof(f)){invalid=1;break;}
     line[strcspn(line, "\r\n")] = 0;
-    if (sscanf(line, "server=%255[^\n]", s->server) == 1) continue;
+    if(!strcmp(line,"complete=1")){complete=1;continue;}
+    if(sscanf(line,"version=%d",&version)==1)continue;
+    if(sscanf(line,"remote_bitrate=%d",&s->remote_bitrate)==1)continue;
+    if(sscanf(line,"relay_bitrate=%d",&s->relay_bitrate)==1)continue;
+    if(sscanf(line,"adaptive=%d",&s->adaptive)==1)continue;
+    if(sscanf(line,"profile_name=%79[^\n]",s->profile_name)==1)continue;
+    if (sscanf(line, "server=%255[^\n]", s->server) == 1){server_seen=1;continue;}
     if (sscanf(line, "token=%127[^\n]", s->token) == 1) continue;
     if (sscanf(line, "account_token=%127[^\n]", s->account_token) == 1) continue;
     if(sscanf(line,"server_id=%127[^\n]",s->server_id)==1)continue;
     if(sscanf(line,"remote_mode=%d",&s->remote_mode)==1)continue;
     if(sscanf(line,"connection_kind=%d",&s->connection_kind)==1)continue;
-    if (sscanf(line, "client_id=%39[^\n]", s->client_id) == 1) continue;
+    if (sscanf(line, "client_id=%39[^\n]", s->client_id) == 1){client_seen=1;continue;}
     if (sscanf(line, "bitrate=%d", &s->bitrate) == 1) continue;
     if (sscanf(line, "resume=%d", &s->resume) == 1) continue;
     if (sscanf(line, "sort=%d", &s->sort) == 1) continue;
@@ -56,11 +62,14 @@ int settings_load(settings_t *s) {
     if (sscanf(line, "autoplay=%d", &s->autoplay) == 1) continue;
     if (sscanf(line, "subtitles=%d", &s->subtitles) == 1) continue;
   }
-  fclose(f);
+  invalid=invalid || ferror(f);fclose(f);
+  if(invalid || !server_seen || !client_seen || (version && (version!=2 || !complete)) || settings_server_url(s->server)<0)return -1;
   settings_ensure_client_id(s);
   if (s->bitrate != 1000 && s->bitrate != 2000 && s->bitrate != 4000) s->bitrate=2000;
   s->remote_mode=!!s->remote_mode;if(s->connection_kind<0 || s->connection_kind>2)s->connection_kind=0;
-  s->resume=!!s->resume;
+  if(s->remote_bitrate!=1000 && s->remote_bitrate!=2000 && s->remote_bitrate!=4000)s->remote_bitrate=2000;
+  if(s->relay_bitrate!=500 && s->relay_bitrate!=1000)s->relay_bitrate=1000;
+  s->adaptive=!!s->adaptive;s->resume=!!s->resume;
   if (s->sort<0 || s->sort>2) s->sort=0;
   if (!s->account_token[0]) snprintf(s->account_token,sizeof(s->account_token),"%s",s->token);
   if(s->performance<0 || s->performance>2)s->performance=2;
@@ -69,23 +78,40 @@ int settings_load(settings_t *s) {
   return 0;
 }
 
-int settings_save(const settings_t *s) {
-  FILE *f = fopen(CONFIG_PATH ".tmp", "w");
+int settings_load(settings_t *s){
+ if(!load_path(s,CONFIG_PATH))return 0;
+ if(!load_path(s,CONFIG_PATH ".bak"))return 0;
+ settings_defaults(s);settings_ensure_client_id(s);return -1;
+}
+static int save_path(const settings_t *s,const char *path) {
+ char temporary[320],backup[320];if(strlen(path)>300)return -1;snprintf(temporary,sizeof(temporary),"%s.tmp",path);snprintf(backup,sizeof(backup),"%s.bak",path);
+ settings_t old;
+ // No new write or backup when the canonical contents have not changed.
+ if(!load_path(&old,path) && !strcmp(old.server,s->server) && !strcmp(old.token,s->token) && !strcmp(old.account_token,s->account_token) && !strcmp(old.client_id,s->client_id) && !strcmp(old.server_id,s->server_id) && !strcmp(old.profile_name,s->profile_name) &&
+ old.bitrate==s->bitrate && old.remote_bitrate==s->remote_bitrate && old.relay_bitrate==s->relay_bitrate && old.adaptive==s->adaptive && old.resume==s->resume && old.sort==s->sort && old.performance==s->performance && old.autoplay==s->autoplay && old.subtitles==s->subtitles && old.remote_mode==s->remote_mode && old.connection_kind==s->connection_kind)return 0;
+  FILE *f = fopen(temporary, "w");
   if (!f) return -1;
-  int r = fprintf(f, "server=%s\ntoken=%s\naccount_token=%s\nclient_id=%s\nbitrate=%d\nresume=%d\nsort=%d\nperformance=%d\nautoplay=%d\nsubtitles=%d\nserver_id=%s\nremote_mode=%d\nconnection_kind=%d\n",
-    s->server, s->token, s->account_token, s->client_id, s->bitrate, s->resume, s->sort,s->performance,s->autoplay,s->subtitles,s->server_id,s->remote_mode,s->connection_kind);
+  int r = fprintf(f, "server=%s\ntoken=%s\naccount_token=%s\nclient_id=%s\nbitrate=%d\nresume=%d\nsort=%d\nperformance=%d\nautoplay=%d\nsubtitles=%d\nserver_id=%s\nremote_mode=%d\nconnection_kind=%d\nversion=2\nremote_bitrate=%d\nrelay_bitrate=%d\nadaptive=%d\nprofile_name=%s\ncomplete=1\n",
+    s->server, s->token, s->account_token, s->client_id, s->bitrate, s->resume, s->sort,s->performance,s->autoplay,s->subtitles,s->server_id,s->remote_mode,s->connection_kind,s->remote_bitrate,s->relay_bitrate,s->adaptive,s->profile_name);
   int closed = fclose(f);
-  if (r < 0 || closed != 0) { remove(CONFIG_PATH ".tmp"); return -1; }
+  if (r < 0 || closed != 0) { remove(temporary); return -1; }
   // Vita rename replaces the destination; the host C runtime on Windows does
   // not. Keep a backup instead of deleting the only working settings file.
-  remove(CONFIG_PATH ".bak");
-  int had_old=rename(CONFIG_PATH,CONFIG_PATH ".bak")==0;
-  if (rename(CONFIG_PATH ".tmp",CONFIG_PATH)!=0) {
-    if(had_old)rename(CONFIG_PATH ".bak",CONFIG_PATH);
+  // Never replace the last validated backup with a truncated primary.
+  int had_old=0;
+  if(!load_path(&old,path)){remove(backup);had_old=rename(path,backup)==0;if(!had_old){remove(temporary);return -1;}}
+  else remove(path);
+  if (rename(temporary,path)!=0) {
+    if(had_old)rename(backup,path);
     return -1;
   }
-  remove(CONFIG_PATH ".bak");return 0;
+  return 0;
 }
+
+int settings_save(const settings_t *s){return save_path(s,CONFIG_PATH);}
+static int profile_path(int account,int slot,char path[256]){if((account!=0 && account!=1) || slot<0 || slot>=(account?4:8))return -1;snprintf(path,256,CONFIG_PATH ".%s%d",account?"account":"favorite",slot);return 0;}
+int settings_profile_load(int account,int slot,settings_t *s){char path[256],backup[320];if(profile_path(account,slot,path))return -1;if(!load_path(s,path))return 0;snprintf(backup,sizeof(backup),"%s.bak",path);return load_path(s,backup);}
+int settings_profile_save(int account,int slot,const settings_t *s){char path[256];return profile_path(account,slot,path)?-1:save_path(s,path);}
 
 int settings_server_url(char *url) {
   size_t n=strlen(url);

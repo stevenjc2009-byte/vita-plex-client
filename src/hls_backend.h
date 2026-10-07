@@ -11,3 +11,8 @@ uint64_t hls_backend_time(void);
 int hls_backend_pause(int pause);
 int hls_backend_error(void);
 const char *hls_backend_stage(void);
+
+int hls_backend_audio_eof(void);
+int hls_backend_buffering(void);
+
+void hls_backend_diagnostics(char *out,unsigned cap);

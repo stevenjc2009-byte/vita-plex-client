@@ -17,6 +17,7 @@
 #include <psp2/display.h>
 #include <psp2/kernel/sysmem.h>
 #include <psp2/kernel/threadmgr.h>
+#include <psp2/kernel/processmgr.h>
 #include <psp2/io/stat.h>
 #endif
 #define STBI_ONLY_JPEG
@@ -241,7 +242,7 @@ static void draw_grid(const gui_view_t *v,int nav) {
       rect(x,y,PW,PH,TILE);
       artwork_t *img=__atomic_load_n(art+cell,__ATOMIC_ACQUIRE);
       if(img)poster(img,x,y,PW,PH);
-      else {text(kind(it),x+10,y+38,0,GOLD,PW-18);wrap(it->title,x+10,y+64,PW-20,2);}
+      else {rect(x,y,PW,PH,BLACK);text(it->thumb[0]?"Loading art":"Metadata",x+8,y+38,0,GOLD,PW-16);rect(x+PW/2-5,y+60,10,10,GOLD);wrap(it->title,x+10,y+82,PW-20,2);}
       if(it->view_count){rect(x,y,PW,22,PANEL);text("WATCHED",x+8,y+1,0,GOLD,PW-12);}
       if(selected)border(x-3,y-3,PW+6,PH+6,GOLD);
       if(it->view_offset && it->duration) {
@@ -343,10 +344,11 @@ int gui_browse_view(gui_view_t *v) {
   if(v->cursor<0)v->cursor=0;if(v->cursor>=v->n)v->cursor=v->n?v->n-1:0;
   int nav=-1,loaded=-1,dirty=1,version=-1,result=GUI_QUIT;
 #ifdef __vita__
-  input_t in;input_init(&in);
+  input_t in;input_init(&in);uint64_t poll_time=sceKernelGetProcessTimeWide();
   for(;;) {
     int per=v->libraries?6:PAGE,page=v->cursor/per;
     if(!v->libraries && loaded!=page){start_art(v,page);loaded=page;dirty=1;}
+    if(v->poll_scan && sceKernelGetProcessTimeWide()-poll_time>5000000){result=GUI_SCAN_POLL;break;}
     int observed=__atomic_load_n(&art_version,__ATOMIC_ACQUIRE);
     if(observed!=version){version=observed;dirty=1;}
     if(dirty){draw_grid(v,nav);present();dirty=0;}
@@ -493,7 +495,7 @@ int gui_details(const browse_item_t *it,const char *server,const char *token,con
   // Details only use an existing poster; never block controller input for artwork.
   char art_path[120];cache_path(server,it->thumb,art_path);FILE *cached=fopen(art_path,"rb");
   if(cached){fclose(cached);img=load_art(&v,it);}
-  int choice=0,can_resume=it->view_offset>10000 && it->view_offset+10000<it->duration;
+  int choice=0,can_resume=it->view_offset>0 && (!it->duration || it->view_offset<it->duration);
   int result=GUI_BACK;
 #ifdef __vita__
   input_t in;input_init(&in);
@@ -532,7 +534,7 @@ int gui_details(const browse_item_t *it,const char *server,const char *token,con
 }
 void gui_player_overlay(unsigned *buffer,const char *title,unsigned pos,unsigned duration,int paused,const char *message) {
   unsigned *saved=fb;fb=buffer;
-  rect(0,0,W,64,PANEL);text(title,24,13,1,WHITE,904);
+  rect(0,0,W,64,PANEL);text(title,24,13,1,WHITE,710);text("Tracks / Square",768,18,0,GOLD,185);
   rect(0,H-80,W,80,PANEL);rect(24,H-48,912,3,TILE);
   unsigned progress=duration?(unsigned)((uint64_t)912*pos/duration):0;if(progress>912)progress=912;
   rect(24,H-48,(int)progress,3,GOLD);
@@ -563,4 +565,24 @@ int gui_photo(const char *title,const char *path){FILE *file=fopen(path,"rb");if
   break;
 #endif
  }stbi_image_free(image);return result;
+}
+
+static unsigned *postplay;
+void gui_player_end_frame(const unsigned *frame){if(!postplay)postplay=malloc(W*H*sizeof(*postplay));if(postplay)memcpy(postplay,frame,W*H*sizeof(*postplay));}
+int gui_up_next(const char *title,int countdown){
+#ifdef __vita__
+ input_t input;input_init(&input);uint64_t until=sceKernelGetProcessTimeWide()+(uint64_t)(countdown?10:0)*1000000;
+ for(;;){
+  // A small bottom-right card; the rest of the screen remains unobscured.
+  if(postplay)memcpy(fb,postplay,W*H*sizeof(*fb));else memcpy(fb,buffers[draw_buffer^1],W*H*sizeof(*fb));rect(600,374,348,158,PANEL);border(600,374,348,158,GOLD);
+  char line[80];uint64_t now=sceKernelGetProcessTimeWide();unsigned seconds=countdown && now<until?(unsigned)((until-now+999999)/1000000):0;
+  snprintf(line,sizeof(line),countdown?"Up next in %u seconds":"Up next",seconds);text(line,614,384,1,GOLD,320);text(title,614,418,0,WHITE,320);
+  rect(612,474,156,42,TILE);rect(778,474,156,42,TILE);text("Play now / X",618,485,0,WHITE,145);text("Cancel / O",786,485,0,WHITE,140);present();
+  unsigned p=input_read(&input);if(p&SCE_CTRL_START){free(postplay);postplay=NULL;return GUI_QUIT;}if(p&SCE_CTRL_CIRCLE){free(postplay);postplay=NULL;return 0;}
+  if(p&TOUCH_EVENT && input.touch.y>=474 && input.touch.y<=516){if(input.touch.x>=612 && input.touch.x<=768){free(postplay);postplay=NULL;return 1;}if(input.touch.x>=778 && input.touch.x<=934){free(postplay);postplay=NULL;return 0;}}
+  if(p&SCE_CTRL_CROSS || (countdown && now>=until)){free(postplay);postplay=NULL;return 1;}
+ }
+#else
+ (void)title;(void)countdown;return 0;
+#endif
 }

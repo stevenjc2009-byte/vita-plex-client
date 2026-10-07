@@ -71,15 +71,52 @@ static int discover(settings_t *st,int automatic) {
     if(result==-1){snprintf(notice,sizeof(notice),"Connection check cancelled. Saved server unchanged.");return 0;}
     if(!result){snprintf(notice,sizeof(notice),"No suitable connection responded. Check Plex Remote Access, Wi-Fi and TLS diagnostics.");return 0;}
     if(save(&candidate))return 0;
-    *st=candidate;snprintf(notice,sizeof(notice),"Selected %s (%s)",servers[selected].name,st->connection_kind==2?"Relay / 1 Mbps":st->connection_kind==1?"remote HTTPS":"home network");return 1;
+    int pending_failed=progress_rebind(st,&candidate);
+    *st=candidate;if(pending_failed){snprintf(notice,sizeof(notice),"Connected; progress migration failed. Check free space.");return 1;}snprintf(notice,sizeof(notice),"Selected %s (%s)",servers[selected].name,st->connection_kind==2?"Relay / 1 Mbps":st->connection_kind==1?"remote HTTPS":"home network");return 1;
   }
   return 0;
+}
+static int profiles_menu(settings_t *st,int account){
+ const int slots=account?4:8;static settings_t profiles[8];char labels[9][160];const char *rows[9];int present[8];
+ for(int i=0;i<slots;i++){present[i]=!settings_profile_load(account,i,profiles+i);snprintf(labels[i],sizeof(labels[i]),"%d. %.120s",i+1,present[i]?(profiles[i].profile_name[0]?profiles[i].profile_name:profiles[i].server):"Empty slot");rows[i]=labels[i];}
+ rows[slots]="Save current account / server";int action=gui_choice(account?"Saved accounts":"Server favorites","Select to reconnect; saving uses a named slot on this Vita",rows,slots+1);
+ if(action==GUI_QUIT)return GUI_QUIT;if(action<0)return 0;
+ if(action==slots){int slot=gui_choice("Save to slot","Choosing an occupied slot replaces that saved profile",rows,slots);if(slot==GUI_QUIT)return slot;if(slot<0)return 0;settings_t saved=*st;snprintf(saved.profile_name,sizeof(saved.profile_name),"%s",present[slot]?profiles[slot].profile_name:"");int result=gui_keyboard(account?"Account name":"Favorite name",saved.profile_name,sizeof(saved.profile_name),0);if(result==GUI_QUIT)return result;if(result<0)return 0;
+  snprintf(notice,sizeof(notice),"%s",settings_profile_save(account,slot,&saved)?"Could not save profile. Check free space.":"Profile saved on this Vita.");return 0;}
+ if(!present[action])return 0;
+ if(!account && strcmp(profiles[action].client_id,st->client_id)){snprintf(notice,sizeof(notice),"Switch to this favorite's saved account first.");return 0;}
+ settings_t candidate=account?profiles[action]:*st;
+ if(!account){snprintf(candidate.server,sizeof(candidate.server),"%s",profiles[action].server);snprintf(candidate.token,sizeof(candidate.token),"%s",profiles[action].token);snprintf(candidate.server_id,sizeof(candidate.server_id),"%s",profiles[action].server_id);candidate.connection_kind=profiles[action].connection_kind;}
+ if(!settings_connection_allowed(&candidate)){snprintf(notice,sizeof(notice),"Away mode requires a secure remote endpoint. Reconnect the selected server.");return 0;}
+ if(plex_build_page_url(candidate.server,candidate.token,"/identity","","",0,1,url,sizeof(url)) || request(&candidate,url,"text/xml") || (candidate.server_id[0] && !plex_server_identity(body,candidate.server_id))){snprintf(notice,sizeof(notice),"Saved server could not be verified. Find and select the server on this network.");return 0;}
+ if(save(&candidate))return 0;progress_rebind(st,&candidate);*st=candidate;performance_apply(st->performance);snprintf(notice,sizeof(notice),"Saved %s selected.",account?"account":"server");return GUI_HOME;
+}
+static int choose_view(settings_t *st,const location_t *loc,location_t *next){
+ const char *views[]={"Continue Watching","Recently Added","Unwatched","Watched","Filter by genre","Filter by year","Filter by media type","Collections","Playlists","Your libraries"};
+ int selected=gui_choice("Browse Plex","Choose a view or filter",views,10);if(selected==GUI_QUIT)return -2;if(selected<0)return -1;if(selected==9)return 0;
+ memset(next,0,sizeof(*next));snprintf(next->title,sizeof(next->title),"%s",views[selected]);snprintf(next->section,sizeof(next->section),"%s",loc->section);
+ if(selected<=3){snprintf(next->path,sizeof(next->path),"%s",selected==0?"/library/onDeck":selected==1?"/library/recentlyAdded":selected==2?"/library/all?unwatched=1":"/library/all?unwatched=0");return 1;}
+ if(selected==8){snprintf(next->path,sizeof(next->path),"/playlists");return 1;}
+ if(selected==6){const char *types[]={"Movies","Series","Episodes","Artists","Albums","Tracks","Photos"};const int ids[]={1,2,4,8,9,10,13};int type=gui_choice("Media type","Filter the current library, or all libraries",types,7);if(type==GUI_QUIT)return -2;if(type<0)return -1;
+  if(next->section[0])snprintf(next->path,sizeof(next->path),"/library/sections/%s/all?type=%d",next->section,ids[type]);else snprintf(next->path,sizeof(next->path),"/library/all?type=%d",ids[type]);return 1;}
+ if(!next->section[0]){
+  if(plex_build_page_url(st->server,st->token,"/library/sections","","",0,40,url,sizeof(url)) || request(st,url,"text/xml"))return -1;
+  static browse_item_t libraries[40];const char *names[40];int n=plex_parse_items(body,"Directory",libraries,40);if(!n)return -1;for(int i=0;i<n;i++)names[i]=libraries[i].title;
+  int library=gui_choice("Choose library","Filters and collections belong to a library",names,n);if(library==GUI_QUIT)return -2;if(library<0)return -1;
+  if(strlen(libraries[library].key)>=sizeof(next->section) || strspn(libraries[library].key,"0123456789")!=strlen(libraries[library].key))return -1;snprintf(next->section,sizeof(next->section),"%s",libraries[library].key);
+ }
+ if(selected==7){snprintf(next->path,sizeof(next->path),"/library/sections/%s/collections",next->section);return 1;}
+ char path[128];snprintf(path,sizeof(path),"/library/sections/%s/%s",next->section,selected==4?"genre":"year");
+ if(plex_build_page_url(st->server,st->token,path,"","",0,100,url,sizeof(url)) || request(st,url,"text/xml"))return -1;
+ static browse_item_t values[100];const char *names[100];int n=plex_parse_items(body,"Directory",values,100);if(!n){snprintf(notice,sizeof(notice),"No filter values were supplied by this library.");return -1;}for(int i=0;i<n;i++)names[i]=values[i].title;
+ int value=gui_choice(selected==4?"Genre":"Year","Select a server-provided filter",names,n);if(value==GUI_QUIT)return -2;if(value<0)return -1;
+ char encoded[768];plex_url_encode(values[value].key,encoded,sizeof(encoded));int count=snprintf(next->path,sizeof(next->path),"/library/sections/%s/all?%s=%s",next->section,selected==4?"genre":"year",encoded);if(count<0 || count>=(int)sizeof(next->path))return -1;return 1;
 }
 static int settings_screen(settings_t *st,const char *section) {
   int cursor=0;
   for(;;) {
     if(network_exit_requested())return GUI_QUIT;
-    char server[320],quality[100],resume[80],sorting[80],clocks[80],autoplay[80],subtitles[80],remote[100];
+    char server[320],quality[100],resume[80],sorting[80],clocks[80],autoplay[80],subtitles[80],remote[100],remote_quality[100],relay_quality[100],adaptive[100];
     snprintf(server,sizeof(server),"Server: %s",st->server);
     snprintf(quality,sizeof(quality),"Video quality: %d Mbps (H.264 / AAC)",st->bitrate/1000);
     snprintf(resume,sizeof(resume),"Resume playback: %s",st->resume?"On":"Off");
@@ -88,12 +125,13 @@ static int settings_screen(settings_t *st,const char *section) {
     snprintf(autoplay,sizeof(autoplay),"Autoplay next episode: %s",st->autoplay?"On":"Off");
     snprintf(subtitles,sizeof(subtitles),"Subtitles: %s",st->subtitles?"Server default / selected":"Off");
     snprintf(remote,sizeof(remote),"Connection: %s",st->remote_mode?"Away from home":"Automatic home / remote");
+    snprintf(remote_quality,sizeof(remote_quality),"Remote quality: %d kbps",st->remote_bitrate);snprintf(relay_quality,sizeof(relay_quality),"Relay quality: %d kbps",st->relay_bitrate);snprintf(adaptive,sizeof(adaptive),"Adapt quality on sustained buffering: %s",st->adaptive?"On":"Off");
     const char *rows[]={server,"Find and select Plex server","Enter / replace Plex token",quality,resume,sorting,
       "Refresh libraries",section && *section?"Scan this library for new media":"Scan all libraries for new media",
-      "Check for app updates","About / controls",clocks,autoplay,subtitles,"Connection diagnostics","Retry saved playback progress","Clear poster cache","Reset preferences","Unlink Plex account",remote,"Reconnect selected server","Remote access setup","Back"};
-    int choice=gui_choice_cursor("Settings",notice[0]?notice:"Connection, playback and library preferences",rows,22,&cursor);
+      "Check for app updates","About / controls",clocks,autoplay,subtitles,"Connection diagnostics","Retry saved playback progress","Clear poster cache","Reset preferences","Unlink Plex account",remote,"Reconnect selected server","Remote access setup",remote_quality,relay_quality,adaptive,"Server favorites","Saved Plex accounts","Back"};
+    int choice=gui_choice_cursor("Settings",notice[0]?notice:"Connection, playback and library preferences",rows,27,&cursor);
     if(choice==GUI_QUIT)return GUI_QUIT;
-    if(choice<0 || choice==21)return GUI_BACK;
+    if(choice<0 || choice==26)return GUI_BACK;
     if(choice==0) {
       char candidate[256];snprintf(candidate,sizeof(candidate),"%s",st->server);
       int r=gui_keyboard("Server address",candidate,sizeof(candidate),0);if(r==GUI_QUIT)return r;
@@ -148,6 +186,10 @@ static int settings_screen(settings_t *st,const char *section) {
       if(r==0){st->token[0]=st->account_token[0]=st->client_id[0]=st->server_id[0]=0;settings_ensure_client_id(st);if(save(st))continue;return GUI_HOME;}}
     else if(choice==18){const char *modes[]={"Automatic home / remote","Away from home","Back"};int mode=gui_choice("Connection mode","Away mode uses secure remote connections only",modes,3);if(mode==GUI_QUIT)return mode;if(mode==0 || mode==1){st->remote_mode=mode;if(save(st))continue;int result=discover(st,st->server_id[0]!=0);if(result<0)return GUI_QUIT;if(result>0)return GUI_HOME;}}
     else if(choice==19){int result=discover(st,st->server_id[0]!=0);if(result<0)return GUI_QUIT;if(result>0)return GUI_HOME;}
+    else if(choice==21){st->remote_bitrate=st->remote_bitrate==1000?2000:st->remote_bitrate==2000?4000:1000;save(st);}
+    else if(choice==22){st->relay_bitrate=st->relay_bitrate==1000?500:1000;save(st);}
+    else if(choice==23){st->adaptive=!st->adaptive;save(st);}
+    else if(choice==24 || choice==25){int r=profiles_menu(st,choice==25);if(r==GUI_QUIT || r==GUI_HOME)return r;}
     else if(choice==20){const char *info[]={"Enable Remote Access in Plex Media Server settings","Link this Vita account and select your Plex server","Use another Wi-Fi network or a phone hotspot","Plex Pass / Remote Watch Pass may be required","Relay uses 1 Mbps video; direct access is preferred","Help: support.plex.tv (Remote Access)","Back"};if(gui_choice("Watch away from home","Your server must stay online; setup happens on the server",info,7)==GUI_QUIT)return GUI_QUIT;}
 
   }
@@ -229,15 +271,15 @@ int main(void) {
     if(settings_unsaved)snprintf(notice,sizeof(notice),"Settings are not saved. Check free space, then save a setting again.");
     char subtitle[240];snprintf(subtitle,sizeof(subtitle),"%s%s%s",depth?(strstr(loc->path,"/onDeck")?"Continue Watching":strstr(loc->path,"/recentlyAdded")?"Recently added":sort_names[st.sort]):"Choose a library to explore",loc->search[0]?"  |  Search: ":"",loc->search);
     gui_view_t view={.title=loc->title,.subtitle=subtitle,.notice=notice,.server=st.server,.token=st.token,
-      .items=items,.n=count,.libraries=depth==0,.offset=loc->offset,.total=total,.cursor=loc->cursor};
+      .items=items,.n=count,.libraries=depth==0,.offset=loc->offset,.total=total,.cursor=loc->cursor,.poll_scan=library_scan_active()};
     int action=gui_browse_view(&view);loc->cursor=view.cursor;
     if(action==GUI_QUIT)break;
-    if(action==GUI_VIEWS){const char *views[]={"Continue Watching","Recently Added","Unwatched","Your libraries"};int r=gui_choice("Home","Choose a Plex view",views,4);if(r==GUI_QUIT)break;
-      if(r>=0){if(r==3){depth=0;}else{depth=1;memset(locations+1,0,sizeof(*locations));snprintf(locations[1].title,sizeof(locations[1].title),"%s",views[r]);snprintf(locations[1].path,sizeof(locations[1].path),"%s",r==0?"/library/onDeck":r==1?"/library/recentlyAdded":"/library/all?unwatched=1");}fetch=1;}}
+    if(action==GUI_VIEWS){location_t next;int r=choose_view(&st,loc,&next);if(r==-2)break;if(r>=0){depth=r;if(r)locations[1]=next;fetch=1;}}
     else if(action==GUI_HOME){depth=0;locations[0].offset=locations[0].cursor=0;fetch=1;}
     else if(action==GUI_BACK){if(depth){depth--;fetch=1;}else {int r=settings_screen(&st,NULL);if(r==GUI_QUIT)break;fetch=1;}}
     else if(action==GUI_SETTINGS){int old_sort=st.sort;int r=settings_screen(&st,loc->section);if(old_sort!=st.sort){loc->offset=loc->cursor=0;}if(r==GUI_QUIT)break;if(r==GUI_HOME)depth=0;fetch=1;}
-    else if(action==GUI_SCAN){const char *section=loc->section;if(!depth && count && view.cursor>=0 && view.cursor<count)section=items[view.cursor].key;if(library_scan(&st,section,body,sizeof(body),notice,sizeof(notice))==GUI_QUIT)break;}
+    else if(action==GUI_SCAN_POLL){library_scan_poll(&st,body,sizeof(body),notice,sizeof(notice));fetch=1;}
+    else if(action==GUI_SCAN){const char *section=loc->section;if(!depth && count && view.cursor>=0 && view.cursor<count)section=items[view.cursor].key;if(library_scan(&st,section,body,sizeof(body),notice,sizeof(notice))==GUI_QUIT)break;fetch=1;}
     else if(action==GUI_REFRESH){notice[0]=0;connection_retry=0;fetch=1;}
     else if(action==GUI_NEXT){loc->offset+=BROWSE_MAX_ITEMS;loc->cursor=0;fetch=1;}
     else if(action==GUI_PREVIOUS){loc->offset=loc->offset>BROWSE_MAX_ITEMS?loc->offset-BROWSE_MAX_ITEMS:0;loc->cursor=0;fetch=1;}
@@ -262,6 +304,7 @@ int main(void) {
         if(depth==0)snprintf(next->path,sizeof(next->path),"/library/sections/%s/all",it->key);
         else {
           snprintf(next->path,sizeof(next->path),"%s",it->key);
+          if(!strcmp(it->type,"playlist") && !strstr(it->key,"/items"))snprintf(next->path,sizeof(next->path),"%s/items",it->key);
           if(!strstr(next->path,"/children") && !strstr(next->path,"/allLeaves") && !strncmp(it->key,"/library/metadata/",18))
             snprintf(next->path,sizeof(next->path),"%s/children",it->key);
         }

@@ -138,6 +138,19 @@ int main(void) {
   assert(!make_test_dir("config.ini.tmp"));settings_t failed=roundtrip;strcpy(failed.server,"https://new.example:32400");
   assert(settings_save(&failed)<0);settings_t retained;assert(!settings_load(&retained) && !strcmp(retained.server,roundtrip.server) && !strcmp(retained.server_id,roundtrip.server_id));
   assert(!remove_test_dir("config.ini.tmp"));
+  // A changed save rotates the previous valid contents; an unchanged save
+  // must not replace that recovery copy. A truncated primary restores it.
+  settings_t changed=roundtrip;changed.bitrate=4000;assert(!settings_save(&changed));
+  assert(!settings_save(&changed));
+  FILE *backup=fopen("config.ini.bak","r");assert(backup);char backup_text[2048];size_t backup_size=fread(backup_text,1,sizeof(backup_text)-1,backup);fclose(backup);backup_text[backup_size]=0;
+  assert(strstr(backup_text,"bitrate=2000\n"));
+  FILE *truncated=fopen("config.ini","wb");assert(truncated);fputs("version=2\nserver=http://broken:32400\nclient_id=test-vita\n",truncated);fclose(truncated);
+  int recovered=settings_load(&retained);if(recovered || retained.bitrate!=2000 || strcmp(retained.server,roundtrip.server))fprintf(stderr,"Settings recovery result=%d bitrate=%d expected-server-match=%d\n",recovered,retained.bitrate,!strcmp(retained.server,roundtrip.server));
+  assert(!recovered && retained.bitrate==2000 && !strcmp(retained.server,roundtrip.server));
+  strcpy(changed.profile_name,"Test favorite");assert(!settings_profile_save(0,0,&changed));settings_t favorite;assert(!settings_profile_load(0,0,&favorite) && !strcmp(favorite.profile_name,"Test favorite") && !strcmp(favorite.client_id,changed.client_id));
+  assert(settings_profile_load(0,8,&favorite)<0 && settings_profile_save(1,4,&changed)<0);
+  assert(!settings_profile_save(1,0,&changed) && !settings_profile_load(1,0,&favorite));remove("config.ini.favorite0");remove("config.ini.account0");
+  remove("config.ini.bak");
   remove("config.ini");
   assert(!plex_build_music_url(&settings,"/library/metadata/42","session",12000,url,sizeof(url)));
   assert(strstr(url,"/music/:/transcode/universal/start.m3u8?") && strstr(url,"audioCodec=aac") && strstr(url,"offset=12"));

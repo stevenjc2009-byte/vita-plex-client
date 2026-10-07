@@ -20,7 +20,7 @@ int plex_build_playback_url(const settings_t *s,const char *key,const char *sess
     "videoResolution=960x544&maxVideoBitrate=%d&videoQuality=100&videoCodec=h264&audioCodec=aac&audioChannels=2&"
     "directPlay=0&directStream=0&subtitles=%s&subtitleSize=100&location=%s&hasMDE=1&offset=%u&session=%s&"
     "X-Plex-Product=PlexVita&X-Plex-Platform=PlayStation%%20Vita&X-Plex-Client-Profile-Name=Chrome&X-Plex-Client-Identifier=%s&"
-    "X-Plex-Client-Profile-Extra=%s&X-Plex-Token=%s",s->server,path,s->connection_kind==2?1000:s->bitrate,s->subtitles?"burn":"none",(s->remote_mode || s->connection_kind)?"wan":"lan",offset/1000,sid,id,profile,token);
+    "X-Plex-Client-Profile-Extra=%s&X-Plex-Token=%s",s->server,path,s->connection_kind==2?(s->relay_bitrate?s->relay_bitrate:1000):s->connection_kind==1?(s->remote_bitrate?s->remote_bitrate:s->bitrate):s->bitrate,s->subtitles?"burn":"none",(s->remote_mode || s->connection_kind)?"wan":"lan",offset/1000,sid,id,profile,token);
   return n<0 || (unsigned)n>=size?-1:0;
 }
 

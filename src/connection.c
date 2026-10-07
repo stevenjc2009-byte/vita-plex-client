@@ -6,7 +6,7 @@
 #include <string.h>
 int connection_probe(const settings_t *current,const plex_server_t *server,settings_t *connected){
  if(!current || !server || !connected)return 0;
- int order[8],n=plex_connection_order(server,current->remote_mode,order,8);
+ int order[PLEX_MAX_CONNECTIONS],n=plex_connection_order(server,current->remote_mode,order,PLEX_MAX_CONNECTIONS);
  const char *token=server->token[0]?server->token:current->account_token[0]?current->account_token:current->token;
  if(!*token || !server->id[0] || strpbrk(token,"\r\n") || strpbrk(server->id,"\r\n"))return 0;
  char encoded[384],url[1024],body[2048];plex_url_encode(token,encoded,sizeof(encoded));

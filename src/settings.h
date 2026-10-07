@@ -10,8 +10,10 @@ typedef struct {
   char account_token[128];
   char client_id[40];
   char server_id[128];
+  char profile_name[80];
   int remote_mode,connection_kind; // 0 automatic/local, 1 away/remote, kind 2 relay
   int bitrate, resume, sort;
+  int remote_bitrate,relay_bitrate,adaptive;
   int performance, autoplay, subtitles;
 } settings_t;
 
@@ -26,3 +28,6 @@ static inline int settings_connection_allowed(const settings_t *s){
  if(!s->remote_mode)return 1;
  return !strncmp(s->server,"https://",8) && (!s->server_id[0] || s->connection_kind>0);
 }
+
+int settings_profile_load(int account,int slot,settings_t *settings);
+int settings_profile_save(int account,int slot,const settings_t *settings);

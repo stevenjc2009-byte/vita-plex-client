@@ -31,3 +31,6 @@ const char *http_init_stage(void);
 // not abort it. Returns 0, or the actual HTTP/library failure; caps binary data.
 int http_media_fetch(const char *url,void *data,unsigned cap,unsigned *used,volatile int *cancel);
 void http_media_abort(void);
+
+#define HTTP_MEDIA_TIMEOUT (-11)
+#define HTTP_MEDIA_DISCONNECTED (-12)

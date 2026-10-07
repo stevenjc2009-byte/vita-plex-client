@@ -9,7 +9,7 @@ int hls_segment(const char *body,uint64_t wanted,char *uri,unsigned cap,uint64_t
  uint64_t first=0;
  for(const char *line=body;*line;){
   const char *end=strpbrk(line,"\r\n");if(!end)end=line+strlen(line);size_t n=(size_t)(end-line);
-  if((n>=18 && !strncmp(line,"#EXT-X-STREAM-INF:",18)) || (n>=17 && !strncmp(line,"#EXT-X-BYTERANGE:",17)) || (n>=11 && !strncmp(line,"#EXT-X-MAP:",11)) || (n>=20 && !strncmp(line,"#EXT-X-DISCONTINUITY",20)))return -1;
+  if((n>=18 && !strncmp(line,"#EXT-X-STREAM-INF:",18)) || (n>=17 && !strncmp(line,"#EXT-X-BYTERANGE:",17)) || (n>=11 && !strncmp(line,"#EXT-X-MAP:",11)) || (n==20 && !strncmp(line,"#EXT-X-DISCONTINUITY",20)))return -1;
   if(n>=11 && !strncmp(line,"#EXT-X-KEY:",11) && (n!=22 || strncmp(line+11,"METHOD=NONE",11)))return -1;
   if(n>=22 && !strncmp(line,"#EXT-X-MEDIA-SEQUENCE:",22)){
    char *tail;errno=0;if(line[22]<'0' || line[22]>'9')return -1;

@@ -24,6 +24,11 @@ int main(int argc,char **argv){settings_t s={0};snprintf(s.server,sizeof(s.serve
  for(int i=0;i<32;i++){snprintf(s.server,sizeof(s.server),"http://test:%d",32400+i);assert(!progress_begin(&s,"42",30000));assert(progress_durable());progress_update(12080,1);assert(progress_finish(12080)<0);}
  assert(progress_pending()==32);snprintf(s.server,sizeof(s.server),"http://overflow:32400");offline=0;assert(!progress_begin(&s,"42",30000) && !progress_durable());assert(!progress_finish(12080) && progress_pending()==32);
  snprintf(s.server,sizeof(s.server),"http://test:32400");assert(progress_pending_for(&s)==1);assert(!progress_discard(&s,1) && progress_pending()==1);assert(!progress_discard(&s,0) && !progress_pending());offline=1;
+ strcpy(s.server_id,"server-one");assert(!progress_begin(&s,"42",30000));progress_update(12080,1);assert(progress_finish(12080)<0);
+ settings_t remote=s;strcpy(remote.server,"https://remote.example:32400");remote.connection_kind=1;remote.remote_mode=1;
+ assert(progress_pending_for(&remote)==1 && progress_position(&remote,"42")==12080);
+ settings_t other=remote;strcpy(other.server_id,"server-two");assert(!progress_pending_for(&other));strcpy(other.server_id,"server-one");strcpy(other.client_id,"other-account-client");assert(!progress_pending_for(&other));
+ offline=0;assert(!progress_retry(&remote) && !progress_pending());offline=1;s.server_id[0]=0;
  assert(!progress_begin(&s,"42",30000));progress_update(12080,1);assert(progress_finish(0)<0);assert(progress_pending()==1);no_resources();
  FILE *f=fopen("progress.bin","rb");assert(f);char bytes[16000];size_t n=fread(bytes,1,sizeof(bytes),f);fclose(f);assert(n>4);for(size_t i=0;i+17<n;i++)assert(memcmp(bytes+i,"SECRET-TEST-TOKEN",17));
  puts("Concurrent checkpoint coalescing and cancellation passed; failed timeline retained in durable journal without token; background worker joined");return 0;}

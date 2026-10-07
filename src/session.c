@@ -40,7 +40,7 @@ static int track(settings_t *s,const char *key,int type){
 }
 int session_play(settings_t *s,browse_item_t *original,char *notice,unsigned cap){
  if(!settings_connection_allowed(s)){snprintf(notice,cap,"Away mode needs a secure remote connection. Reconnect in Settings.");return 0;}
- browse_item_t current=*original;int advanced=0,direct=0;
+ notice[0]=0;browse_item_t current=*original;int advanced=0,direct=0;
  for(;;){
   if(!strcmp(current.type,"photo")){char part[256],image_url[2048];const char *image=current.thumb;
    gui_message(current.title,"Loading photo","O cancels.");if(!get(s,current.key,"",0,1) && !plex_first_part_key(body,part,sizeof(part)))image=part;
@@ -53,6 +53,7 @@ int session_play(settings_t *s,browse_item_t *original,char *notice,unsigned cap
   char key[384];if(current.rating_key[0])snprintf(key,sizeof(key),"/library/metadata/%s",current.rating_key);else snprintf(key,sizeof(key),"%s",current.key);
   gui_message(music?"Track details":"Video details","Loading description","O cancels.");if(!get(s,key,"",0,1)){static browse_item_t details;if(plex_parse_items(body,music?"Track":"Video",&details,1)==1)current=details;}
   if(network_exit_requested())return 1;if(network_cancelled())return 0;
+  unsigned pending=progress_position(s,current.rating_key);if(pending)current.view_offset=pending;
   int choice=0;
   for(;;){if(direct){direct=0;choice=0;break;}browse_item_t shown=current;if(!s->resume)shown.view_offset=0;choice=gui_details(&shown,s->server,s->token,notice);
    if(choice==GUI_QUIT || network_exit_requested())return 1;if(choice<0)return 0;
@@ -66,32 +67,35 @@ int session_play(settings_t *s,browse_item_t *original,char *notice,unsigned cap
   }
   if(choice==3)continue;
   unsigned offset=choice==1?current.view_offset:0;int result=0,completed=0,save_failed=0,recovery_unavailable=0,restart_paused=0;
+  settings_t playback=*s;
   for(;;){
    char session[80],source[4096],next[4096],stop[1400],tok[384],sid[256];snprintf(session,sizeof(session),"%s-%u-%u",s->client_id,sceKernelGetProcessTimeLow(),++serial);
-   if(music?plex_build_music_url(s,key,session,offset,source,sizeof(source)):plex_build_playback_url(s,key,session,offset,source,sizeof(source))){snprintf(notice,cap,"Could not build playback request.");return 0;}
+   if(music?plex_build_music_url(s,key,session,offset,source,sizeof(source)):plex_build_playback_url(&playback,key,session,offset,source,sizeof(source))){snprintf(notice,cap,"Could not build playback request.");return 0;}
    gui_message(current.title,music?"Preparing music":"Preparing video",music?"AAC stereo streaming. O cancels.":"Vita-compatible H.264 / AAC. O cancels.");int valid=0;
    for(int depth=0;depth<4;depth++){if(network_get(source,s->client_id,"application/vnd.apple.mpegurl",body,sizeof(body),20)){error(notice,cap,"Stream preparation failed");break;}
     int r=plex_hls_media_url(source,body,s->token,next,sizeof(next));if(r<0){snprintf(notice,cap,"Plex did not return a valid HLS stream.");break;}if(!r){valid=1;break;}snprintf(source,sizeof(source),"%s",next);}
    int progress_started=0;
-   if(valid){int r=player_play_hls(source);if(r>=0){progress_started=progress_begin(s,current.rating_key,current.duration)==0;if(!progress_started || !progress_durable())recovery_unavailable=1;player_progress_callback(progress_started?progress_update:NULL);player_start_paused(restart_paused);r=player_run_media(current.title,current.duration,offset,music);}
+   if(valid){int r=player_play_hls(source);if(r>=0){progress_started=progress_begin(s,current.rating_key,current.duration)==0;if(!progress_started || !progress_durable())recovery_unavailable=1;player_progress_callback(progress_started?progress_update:NULL);player_start_paused(restart_paused);int quality=playback.connection_kind==2?playback.relay_bitrate:playback.connection_kind==1?playback.remote_bitrate:playback.bitrate;player_adaptive(s->adaptive && quality>(playback.connection_kind==2?500:1000));r=player_run_media(current.title,current.duration,offset,music);}
     player_progress_callback(NULL);unsigned position=player_position();completed=r==0 && player_completed();
     if(progress_started){gui_message(current.title,"Saving playback position","O cancels; unsaved progress remains on this Vita.");if(progress_finish(position))save_failed=1;}
     else if(position)save_failed=1;
     if(position){current.view_offset=position;if(!advanced)original->view_offset=position;}
-    if(r==2){restart_paused=player_was_paused();offset=player_seek_position();result=2;}else result=r;
+    if(r==3){int *quality=playback.connection_kind==2?&playback.relay_bitrate:playback.connection_kind==1?&playback.remote_bitrate:&playback.bitrate;*quality=*quality>2000?2000:*quality>1000?1000:500;r=2;}
+    if(r==-4)r=0; // cancelling preparation is not a decoder failure
+    if(r==2 || r==4){restart_paused=player_was_paused();offset=player_seek_position();result=r;}else result=r;
     if(r<0)snprintf(notice,cap,"Playback failed at %s (0x%X). See debug.log.",player_error_stage(),r);
    }else result=-1;
    plex_url_encode(s->token,tok,sizeof(tok));plex_url_encode(session,sid,sizeof(sid));snprintf(stop,sizeof(stop),"%s/%s/:/transcode/universal/stop?session=%s&X-Plex-Token=%s",s->server,music?"music":"video",sid,tok);
-   gui_message(current.title,"Closing playback session","O cancels.");if(network_get(stop,s->client_id,"text/xml",body,sizeof(body),5)){if(result>=0 && result!=2)snprintf(notice,cap,"Stream cleanup failed. Plex may keep the session briefly.");}
+   gui_message(current.title,"Closing playback session","O cancels.");int cleanup=network_get(stop,s->client_id,"text/xml",body,sizeof(body),5);if(cleanup && !network_cancelled() && !network_exit_requested() && network_last_status()!=401 && network_last_status()!=403 && network_last_status()!=404 && network_last_status()!=410)cleanup=network_get(stop,s->client_id,"text/xml",body,sizeof(body),5);if(cleanup){if(result>=0 && result!=2 && network_last_status()!=404 && network_last_status()!=410)snprintf(notice,cap,"Stream cleanup failed. Plex may keep the session briefly.");}
    if(network_cancelled())completed=0;
    if(network_exit_requested() || result==1)return 1;
+   if(result==4){const char *rows[]={"Audio track","Subtitles","Back to video"};int selected=gui_choice("Playback tracks",current.title,rows,3);if(selected==GUI_QUIT)return 1;if(selected==0 || selected==1){int t=track(s,key,selected==0?2:3);if(t==-2)return 1;if(t<0)error(notice,cap,"Track selection failed");}playback.subtitles=s->subtitles;continue;}
    if(result==2)continue;
-   if(save_failed)snprintf(notice,cap,"%s",recovery_unavailable?"Could not record progress. Check free space and retry pending saves in Settings.":"Progress not confirmed by Plex. Retry pending saves in Settings.");
+   if(save_failed && result>=0)snprintf(notice,cap,"%s",recovery_unavailable?"Could not record progress. Check free space and retry pending saves in Settings.":"Progress not confirmed by Plex. Retry pending saves in Settings.");
    break;
   }
   if(result==0 && completed && !strcmp(current.type,"episode")){
-   browse_item_t next;int n=next_episode(s,&current,&next);if(n>0){int play_next=s->autoplay;
-    if(!play_next){const char *rows[]={"Play next episode","Back to library"};int action=gui_choice("Episode finished",next.title,rows,2);if(action==GUI_QUIT)return 1;play_next=action==0;}
+   browse_item_t next;int n=next_episode(s,&current,&next);if(n>0){int play_next=gui_up_next(next.title,s->autoplay);if(play_next==GUI_QUIT)return 1;
     if(play_next){current=next;advanced=1;direct=1;continue;}
    }
   }return 0;
