@@ -11,7 +11,7 @@ typedef struct {
   int index, parent_index, is_directory,view_count;
 } browse_item_t;
 typedef struct { int offset, size, total; } browse_page_t;
-typedef struct { char name[160], url[256], token[128],connections[4][256];int connection_count; } plex_server_t;
+typedef struct { char name[160], url[256], token[128],connections[8][256],id[128];unsigned char local[8],relay[8];int connection_count; } plex_server_t;
 int plex_xml_attr(const char *start, const char *end, const char *name,
   char *out, unsigned size);
 int plex_parse_items(const char *xml, const char *tag, browse_item_t *out, int max);
@@ -29,3 +29,7 @@ typedef struct {char id[32],label[160];int type,selected;} plex_stream_t;
 int plex_parse_streams(const char *xml,plex_stream_t *out,int max,char *part,unsigned cap);
 
 int plex_first_part_key(const char *xml,char *out,unsigned cap);
+
+int plex_connection_order(const plex_server_t *server,int away,int *order,unsigned cap);
+
+int plex_server_identity(const char *xml,const char *id);

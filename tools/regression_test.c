@@ -80,6 +80,14 @@ int main(void) {
   assert(plex_hls_media_url("http://s:32400/path/start.m3u8","#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=100\nhttp://evil/steal\n","secret",media,sizeof(media))<0);
   assert(plex_hls_media_url("http://s/path/index.m3u8","#EXTM3U\n#EXTINF:4,\n0000.ts\n","token",media,sizeof(media))==0);
   assert(plex_hls_media_url("http://s/path","<html>error</html>","token",media,sizeof(media))<0);
+  const char *remote_xml="<MediaContainer><Device name=\"Home\" provides=\"server\" clientIdentifier=\"machine-1\" accessToken=\"server-token\"><Connection uri=\"http://192.168.0.32:32400\" local=\"1\"/><Connection uri=\"https://home.plex.direct:32400\" local=\"1\"/><Connection uri=\"http://public:32400\" local=\"0\"/><Connection uri=\"https://public.plex.direct:32400\" local=\"0\"/><Connection uri=\"https://relay.plex.direct:443\" local=\"0\" relay=\"1\"/></Device></MediaContainer>";
+  assert(plex_parse_servers(remote_xml,servers,2)==1 && !strcmp(servers[0].id,"machine-1") && servers[0].connection_count==5);
+  assert(plex_server_identity("<?xml version='1.0'?><MediaContainer machineIdentifier='machine-1'/>","machine-1"));
+  assert(!plex_server_identity("<MediaContainer machineIdentifier='other'/>","machine-1"));
+  assert(!plex_server_identity("<html>login</html>","machine-1"));
+  int order[8];assert(plex_connection_order(servers,0,order,8)==4 && order[0]==1 && order[1]==0 && order[2]==3 && order[3]==4);
+  assert(plex_connection_order(servers,1,order,8)==2 && order[0]==3 && order[1]==4);
+  assert(plex_connection_order(servers,1,order,1)==1 && order[0]==3);
   settings_t playback;settings_defaults(&playback);
   snprintf(playback.client_id,sizeof(playback.client_id),"test-vita");snprintf(playback.token,sizeof(playback.token),"secret&token");
   assert(!plex_build_playback_url(&playback,"/library/metadata/42","test-session",12000,media,sizeof(media)));
@@ -111,8 +119,11 @@ int main(void) {
   char address[256]="http://192.168.0.32:32400/  ";assert(!settings_server_url(address));
   assert(!strcmp(address,"http://192.168.0.32:32400"));
   snprintf(address,sizeof(address),"http://user:secret@server:32400");assert(settings_server_url(address)<0);
+  strcpy(settings.server_id,"machine-1");settings.remote_mode=1;settings.connection_kind=2;
   int saved=settings_save(&settings);
   if(saved)perror("settings_save");
+  settings_t roundtrip;assert(!settings_load(&roundtrip) && roundtrip.remote_mode==1 && roundtrip.connection_kind==2 && !strcmp(roundtrip.server_id,"machine-1"));
+  assert(!plex_build_playback_url(&roundtrip,"/library/metadata/42","session",0,url,sizeof(url)) && strstr(url,"maxVideoBitrate=1000") && strstr(url,"location=wan"));
   assert(!saved);
   remove("config.ini");
   assert(!plex_build_music_url(&settings,"/library/metadata/42","session",12000,url,sizeof(url)));

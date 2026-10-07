@@ -8,7 +8,7 @@ static int step,fail_step,modules,blocks,mutexes,net,ctl,http,ssl,templates,conn
 static int external_modules;
 int sceSysmoduleIsLoaded(int module){(void)module;return external_modules?0:-1;}
 static int length_delta,media_abort_read;static int declared,status=200,cancel_read,aborted,removed,close_fail,read_at;static unsigned payload_size,written;static uint64_t ticks;
-const unsigned char plex_ca_root[]={0},plex_ca_int[]={0};const unsigned plex_ca_root_len=1,plex_ca_int_len=1;
+const unsigned char plex_ca_root[]={0},plex_ca_int[]={0},plex_ca_isrg[]={0};const unsigned plex_ca_root_len=1,plex_ca_int_len=1,plex_ca_isrg_len=1;
 static int fail(void){return ++step==fail_step;}
 static void empty(void){assert(!modules && !blocks && !mutexes && !net && !ctl && !http && !ssl && !templates && !connections && !requests && !files);}
 int sceKernelCreateMutex(const char*n,unsigned a,int c,void*o){(void)n;(void)a;(void)c;(void)o;if(fail())return -1;mutexes++;return 1;}
@@ -20,7 +20,7 @@ int sceNetInit(SceNetInitParam*p){assert(p->memory);if(fail())return -1;net++;re
 int sceNetCtlInit(void){if(fail())return -1;ctl++;return 0;}int sceNetCtlTerm(void){ctl--;return 0;}
 int sceHttpInit(unsigned n){(void)n;if(fail())return -1;http++;return 0;}int sceHttpTerm(void){http--;return 0;}
 int sceSslInit(unsigned n){(void)n;if(fail())return -1;ssl++;return 0;}int sceSslTerm(void){ssl--;return 0;}
-int sceHttpsLoadCert(int n,const SceHttpsData**c,void*a,void*b){(void)c;(void)a;(void)b;assert(n==2);return fail()?-1:0;}
+int sceHttpsLoadCert(int n,const SceHttpsData**c,void*a,void*b){(void)c;(void)a;(void)b;assert(n==3);return fail()?-1:0;}
 uint64_t sceKernelGetProcessTimeWide(void){ticks+=100;return ticks;}
 int sceHttpCreateTemplate(const char*n,int v,int a){(void)n;(void)v;(void)a;templates++;return 10;}
 int sceHttpCreateConnectionWithURL(int i,const char*u,int a){(void)i;(void)u;(void)a;connections++;return 11;}

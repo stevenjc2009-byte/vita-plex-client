@@ -8,6 +8,8 @@ typedef struct {
   char token[128];
   char account_token[128];
   char client_id[40];
+  char server_id[128];
+  int remote_mode,connection_kind; // 0 automatic/local, 1 away/remote, kind 2 relay
   int bitrate, resume, sort;
   int performance, autoplay, subtitles;
 } settings_t;

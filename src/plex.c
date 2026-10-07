@@ -18,9 +18,9 @@ int plex_build_playback_url(const settings_t *s,const char *key,const char *sess
   plex_url_encode("add-transcode-target(type=videoProfile&context=streaming&protocol=hls&container=mpegts&videoCodec=h264&audioCodec=aac&replace=true)+add-limitation(scope=videoCodec&scopeName=h264&type=upperBound&name=video.frameRate&value=30&replace=true)",profile,sizeof(profile));
   int n=snprintf(out,size,"%s/video/:/transcode/universal/start.m3u8?path=%s&mediaIndex=0&partIndex=0&protocol=hls&"
     "videoResolution=960x544&maxVideoBitrate=%d&videoQuality=100&videoCodec=h264&audioCodec=aac&audioChannels=2&"
-    "directPlay=0&directStream=0&subtitles=%s&subtitleSize=100&location=lan&hasMDE=1&offset=%u&session=%s&"
+    "directPlay=0&directStream=0&subtitles=%s&subtitleSize=100&location=%s&hasMDE=1&offset=%u&session=%s&"
     "X-Plex-Product=PlexVita&X-Plex-Platform=PlayStation%%20Vita&X-Plex-Client-Profile-Name=Chrome&X-Plex-Client-Identifier=%s&"
-    "X-Plex-Client-Profile-Extra=%s&X-Plex-Token=%s",s->server,path,s->bitrate,s->subtitles?"burn":"none",offset/1000,sid,id,profile,token);
+    "X-Plex-Client-Profile-Extra=%s&X-Plex-Token=%s",s->server,path,s->connection_kind==2?1000:s->bitrate,s->subtitles?"burn":"none",(s->remote_mode || s->connection_kind)?"wan":"lan",offset/1000,sid,id,profile,token);
   return n<0 || (unsigned)n>=size?-1:0;
 }
 

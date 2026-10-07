@@ -91,15 +91,16 @@ int http_init(void) {
     extern const unsigned int plex_ca_root_len;
     extern const unsigned char plex_ca_int[];
     extern const unsigned int plex_ca_int_len;
-    static SceHttpsData ca0, ca1;
-    static const SceHttpsData *ca_list[2];
+    extern const unsigned char plex_ca_isrg[];extern const unsigned int plex_ca_isrg_len;
+    static SceHttpsData ca0, ca1,ca2;
+    static const SceHttpsData *ca_list[3];
     ca0.ptr = (char *)plex_ca_root;
     ca0.size = plex_ca_root_len;
     ca1.ptr = (char *)plex_ca_int;
     ca1.size = plex_ca_int_len;
     ca_list[0] = &ca0;
-    ca_list[1] = &ca1;
-    init_stage="TLS certificates";r=sceHttpsLoadCert(2, ca_list, NULL, NULL);if(r<0)goto tls_fail;
+    ca_list[1] = &ca1;ca2.ptr=(char*)plex_ca_isrg;ca2.size=plex_ca_isrg_len;ca_list[2]=&ca2;
+    init_stage="TLS certificates";r=sceHttpsLoadCert(3, ca_list, NULL, NULL);if(r<0)goto tls_fail;
   }
 
   tls_failure=0;inited=1;return 0;
@@ -147,12 +148,14 @@ static int run(const char *url, const char *client_id, const char *accept,
   req = sceHttpCreateRequestWithURL(conn, method, url, 0);
   if (req < 0) { last_error = req; goto out; }
   track(req);if(expired(started)){last_error=-2;goto out;}
+  sceHttpSetAutoRedirect(req,0);
+  int secure=!strncmp(url,"https://",8);
   // Fail fast on dead networks: stock timeouts are 30s connect /
   // 120s send+recv, which looks like a hang with zero feedback.
-  sceHttpSetResolveTimeOut(req, 2 * 1000 * 1000);
-  sceHttpSetConnectTimeOut(req, 2 * 1000 * 1000);
+  sceHttpSetResolveTimeOut(req, (secure?3:2) * 1000 * 1000);
+  sceHttpSetConnectTimeOut(req, (secure?5:2) * 1000 * 1000);
   sceHttpSetSendTimeOut(req, 3 * 1000 * 1000);
-  sceHttpSetRecvTimeOut(req, 3 * 1000 * 1000);
+  sceHttpSetRecvTimeOut(req, (secure?10:3) * 1000 * 1000);
 
   r = sceHttpSendRequest(req, NULL, 0);
   if (r < 0) {
@@ -224,7 +227,7 @@ static int download(const char *url, const char *path,
   if (req < 0) { last_error = req; goto out; }
   track(req);
   // Release assets 302-redirect to object storage.
-  sceHttpSetAutoRedirect(req, 1);
+  sceHttpSetAutoRedirect(req, cancel?0:1);
   sceHttpSetResolveTimeOut(req, (cancel ? 2 : 10) * 1000 * 1000);
   sceHttpSetConnectTimeOut(req, (cancel ? 2 : 10) * 1000 * 1000);
   sceHttpSetSendTimeOut(req, (cancel ? 3 : 15) * 1000 * 1000);

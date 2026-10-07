@@ -49,3 +49,15 @@ Power callbacks rebuild an active stream at its last observed position after res
 The streaming codec build pins FFmpeg n6.0 and the wiliwili Vita codec patch by commit and SHA-256. Dependency notices and licenses are included in the VPK. The release includes the exact dependency sources and patch for rebuilding; no Sony firmware, BEAV library or overclock plugin is bundled. The current media backend supports MPEG-TS HLS with H.264 video and AAC mono/stereo audio up to 720p, with 8 MiB segments and a 512 KiB playlist limit. Unsupported encrypted, fragmented-MP4, discontinuous or cross-server playlists fail explicitly. The selected first variant is prepared by Plex at the requested quality.
 
 `tools/hls_backend_test.c` exercises the real demux/decoder worker with local MPEG-TS HLS fixtures on desktop. Link it, src/hls_backend.c and src/hls.c against FFmpeg n6.0 avformat/avcodec/avutil (mpegts demuxer, H.264/AAC decoders and parsers), pthread and math. Pass a folder containing index.m3u8 and referenced segments. Desktop tests use software codecs; Vita builds select h264_vita and aac_vita explicitly.
+
+## Watch away from home (01.38)
+
+Enable Remote Access in Plex Media Server, keep the server online and link this Vita to the same account (or an account granted library access). On Vita use Settings > Find and select Plex server. The client remembers the server identity and discovers its current published connections. Automatic mode tries home HTTPS, home HTTP, direct remote HTTPS, then HTTPS Relay. Away from home mode skips local connections. Settings > Reconnect selected server refreshes the addresses; failed library requests also attempt one reconnection. Manually entered addresses retain manual control.
+
+Remote requests verify certificates and hostname; insecure public HTTP endpoints are excluded from automatic discovery. The trust store now includes fingerprint-verified ISRG Root X1 alongside the Plex account certificate chain. Diagnostics show TLS errors rather than disabling verification. Relay requests 1 Mbps video to leave room for audio within Plex's 2 Mbps relay limit. Remote playback uses WAN context.
+
+Use another Wi-Fi network or a phone hotspot to test. Home upload speed and the connection's download speed must support the selected quality. Plex currently requires Plex Pass on the server owner's account, or Plex Pass/Remote Watch Pass on the viewing account for remote video. Router/ISP configuration, including CGNAT or double NAT, can prevent direct access; configure Remote Access on the server and router following Plex's instructions. The app does not change your router or publish ports. Worldwide availability and actual remote playback on Vita are not proven by local tests.
+
+Official setup: https://support.plex.tv/articles/200289506-remote-access/
+Requirements: https://support.plex.tv/articles/requirements-for-remote-playback-of-personal-media/
+Relay: https://support.plex.tv/articles/216766168-accessing-a-server-through-relay/

@@ -161,15 +161,17 @@ int plex_parse_servers(const char *xml, plex_server_t *out, int max) {
       plex_server_t server = {0};
       plex_xml_attr(p, e, "name", server.name, sizeof(server.name));
       plex_xml_attr(p, e, "accessToken", server.token, sizeof(server.token));
+      plex_xml_attr(p,e,"clientIdentifier",server.id,sizeof(server.id));
       const char *c = e;
       int best = -1;
       while ((c = strstr(c, "<Connection ")) && c < close) {
         const char *ce = tag_end(c);
-        char uri[256], local[8];
+        char uri[256], local[8]={0}, relay[8]={0};
         if (!ce || ce > close) break;
         plex_xml_attr(c, ce, "local", local, sizeof(local));
+        plex_xml_attr(c,ce,"relay",relay,sizeof(relay));
         if (plex_xml_attr(c, ce, "uri", uri, sizeof(uri)) == 0) {
-          if(server.connection_count<4)snprintf(server.connections[server.connection_count++],256,"%s",uri);
+          if(server.connection_count<8){int i=server.connection_count++;snprintf(server.connections[i],256,"%s",uri);server.local[i]=!strcmp(local,"1");server.relay[i]=!strcmp(relay,"1");}
           int score = (!strcmp(local, "1") ? 4 : 0) + (!strncmp(uri, "http://", 7) ? 2 : 0);
           if (score > best) { best = score; snprintf(server.url, sizeof(server.url), "%s", uri); }
         }
@@ -204,3 +206,26 @@ void plex_build_timeline_url(const char *server, const char *token, const char *
 }
 
 int plex_first_part_key(const char *xml,char *out,unsigned cap){const char *p=strstr(xml,"<Part ");if(!p)return -1;const char *end=tag_end(p);if(!end || plex_xml_attr(p,end,"key",out,cap) || strncmp(out,"/library/parts/",15))return -1;return 0;}
+
+int plex_connection_order(const plex_server_t *s,int away,int *order,unsigned cap){
+ int n=0,rank[8];if(!s || !order)return 0;
+ for(int i=0;i<s->connection_count && i<8;i++){
+  int secure=!strncmp(s->connections[i],"https://",8),plain=!strncmp(s->connections[i],"http://",7);
+  if(!secure && !plain)continue;
+  const char *host=s->connections[i]+(secure?8:7);int invalid=!*host;
+  for(const char *p=host;*p;p++)if((unsigned char)*p<=32 || strchr("/?#@\\",*p))invalid=1;
+  if(invalid)continue;
+  // Remote connections always verify TLS; never send a token over public HTTP.
+  if((away && s->local[i]) || ((!s->local[i] || s->relay[i]) && !secure))continue;
+  if((unsigned)n>=cap)break;
+  int score=s->relay[i]?0:s->local[i]?(secure?4:3):2,j=n;
+  while(j>0 && rank[j-1]<score){order[j]=order[j-1];rank[j]=rank[j-1];j--;}
+  order[j]=i;rank[j]=score;n++;
+ }return n;
+}
+
+int plex_server_identity(const char *xml,const char *id){
+ if(!xml || !id || !*id)return 0;
+ const char *start=strstr(xml,"<MediaContainer"),*end=start?tag_end(start):NULL;char actual[128];
+ return end && !plex_xml_attr(start,end,"machineIdentifier",actual,sizeof(actual)) && !strcmp(id,actual);
+}

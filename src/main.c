@@ -46,32 +46,39 @@ static int request(settings_t *st,const char *target,const char *accept) {
   else snprintf(notice,sizeof(notice),"Connection failed at %s (HTTP %d / 0x%X). Settings: check server and Wi-Fi.",network_last_stage(),status,network_last_error());
   return -1;
 }
-static int discover(settings_t *st) {
+static int discover(settings_t *st,int automatic) {
   static plex_server_t servers[16];char tok[384];const char *rows[16];
   plex_url_encode(st->account_token[0]?st->account_token:st->token,tok,sizeof(tok));
   snprintf(url,sizeof(url),"https://plex.tv/api/resources?includeHttps=1&includeRelay=1&X-Plex-Token=%s",tok);
   gui_message("Find servers","Looking for your Plex servers","This reads the servers registered to your Plex account.");
   if(request(st,url,"text/xml"))return 0;
   int n=plex_parse_servers(body,servers,16);
-  if(!n){snprintf(notice,sizeof(notice),"No Plex servers found. Enter the LAN server address manually.");return 0;}
+  if(!n){snprintf(notice,sizeof(notice),"No Plex servers found. Link your account or enter a server address.");return 0;}
   for(int i=0;i<n;i++)rows[i]=servers[i].name[0]?servers[i].name:servers[i].url;
-  int selected=gui_choice("Choose server","LAN connections are preferred when available",rows,n);
+  int selected=-1;
+  if(automatic){for(int i=0;i<n;i++)if(st->server_id[0] && !strcmp(st->server_id,servers[i].id)){selected=i;break;}
+    if(selected<0){snprintf(notice,sizeof(notice),"Saved server was not found. Use Find and select Plex server.");return 0;}}
+  else selected=gui_choice("Choose server",st->remote_mode?"Away from home: secure remote connections only":"Automatic: home, secure remote, then Relay",rows,n);
   if(selected==GUI_QUIT)return -1;
   if(selected>=0) {
     plex_server_t *chosen=servers+selected;char probe[1024],probe_body[2048],tok[384];plex_url_encode(chosen->token[0]?chosen->token:st->account_token,tok,sizeof(tok));
-    int reachable=0;for(int attempt=-1;attempt<chosen->connection_count;attempt++){
-      const char *candidate=attempt<0?chosen->url:chosen->connections[attempt];if(attempt>=0 && !strcmp(candidate,chosen->url))continue;
+    int order[8],number=plex_connection_order(chosen,st->remote_mode,order,8),kind=0;
+    int reachable=0;for(int attempt=0;attempt<number;attempt++){
+      int index=order[attempt];const char *candidate=chosen->connections[index];
       snprintf(probe,sizeof(probe),"%s/identity?X-Plex-Token=%s",candidate,tok);gui_message("Choose server","Checking server connection","O cancels.");
-      if(!network_get(probe,st->client_id,"text/xml",probe_body,sizeof(probe_body),5)){if(attempt>=0)snprintf(chosen->url,sizeof(chosen->url),"%s",candidate);reachable=1;break;}
+      if(!network_get(probe,st->client_id,"text/xml",probe_body,sizeof(probe_body),8)){
+        if(chosen->id[0] && !plex_server_identity(probe_body,chosen->id))continue;
+        snprintf(chosen->url,sizeof(chosen->url),"%s",candidate);kind=chosen->relay[index]?2:chosen->local[index]?0:1;reachable=1;break;}
       if(network_exit_requested())return -1;
       if(network_cancelled()){snprintf(notice,sizeof(notice),"Connection check cancelled. Saved server unchanged.");return 0;}
     }
-    if(!reachable){snprintf(notice,sizeof(notice),"None of this server's connections responded. Saved server unchanged.");return 0;}
+    if(!reachable){snprintf(notice,sizeof(notice),"No suitable connection responded. Check Plex Remote Access, Wi-Fi and TLS diagnostics.");return 0;}
     if(settings_server_url(servers[selected].url)<0){snprintf(notice,sizeof(notice),"The selected server address is invalid.");return 0;}
     snprintf(st->server,sizeof(st->server),"%s",servers[selected].url);
+    snprintf(st->server_id,sizeof(st->server_id),"%s",servers[selected].id);st->connection_kind=kind;
     if(servers[selected].token[0])snprintf(st->token,sizeof(st->token),"%s",servers[selected].token);
     else snprintf(st->token,sizeof(st->token),"%s",st->account_token);
-    if(!save(st))snprintf(notice,sizeof(notice),"Selected %s",servers[selected].name);return 1;
+    if(!save(st))snprintf(notice,sizeof(notice),"Selected %s (%s)",servers[selected].name,kind==2?"Relay / 1 Mbps":kind==1?"remote HTTPS":"home network");return 1;
   }
   return 0;
 }
@@ -79,7 +86,7 @@ static int settings_screen(settings_t *st,const char *section) {
   int cursor=0;
   for(;;) {
     if(network_exit_requested())return GUI_QUIT;
-    char server[320],quality[100],resume[80],sorting[80],clocks[80],autoplay[80],subtitles[80];
+    char server[320],quality[100],resume[80],sorting[80],clocks[80],autoplay[80],subtitles[80],remote[100];
     snprintf(server,sizeof(server),"Server: %s",st->server);
     snprintf(quality,sizeof(quality),"Video quality: %d Mbps (H.264 / AAC)",st->bitrate/1000);
     snprintf(resume,sizeof(resume),"Resume playback: %s",st->resume?"On":"Off");
@@ -87,25 +94,26 @@ static int settings_screen(settings_t *st,const char *section) {
     snprintf(clocks,sizeof(clocks),"Performance: %s",st->performance==2?"500 / 222 MHz":st->performance==1?"444 / 222 MHz":"Plugin / original clocks");
     snprintf(autoplay,sizeof(autoplay),"Autoplay next episode: %s",st->autoplay?"On":"Off");
     snprintf(subtitles,sizeof(subtitles),"Subtitles: %s",st->subtitles?"Server default / selected":"Off");
+    snprintf(remote,sizeof(remote),"Connection: %s",st->remote_mode?"Away from home":"Automatic home / remote");
     const char *rows[]={server,"Find and select Plex server","Enter / replace Plex token",quality,resume,sorting,
       "Refresh libraries",section && *section?"Scan this library for new media":"Scan all libraries for new media",
-      "Check for app updates","About / controls",clocks,autoplay,subtitles,"Connection diagnostics","Retry saved playback progress","Clear poster cache","Reset preferences","Unlink Plex account","Back"};
-    int choice=gui_choice_cursor("Settings",notice[0]?notice:"Connection, playback and library preferences",rows,19,&cursor);
+      "Check for app updates","About / controls",clocks,autoplay,subtitles,"Connection diagnostics","Retry saved playback progress","Clear poster cache","Reset preferences","Unlink Plex account",remote,"Reconnect selected server","Remote access setup","Back"};
+    int choice=gui_choice_cursor("Settings",notice[0]?notice:"Connection, playback and library preferences",rows,22,&cursor);
     if(choice==GUI_QUIT)return GUI_QUIT;
-    if(choice<0 || choice==18)return GUI_BACK;
+    if(choice<0 || choice==21)return GUI_BACK;
     if(choice==0) {
       char candidate[256];snprintf(candidate,sizeof(candidate),"%s",st->server);
       int r=gui_keyboard("Server address",candidate,sizeof(candidate),0);if(r==GUI_QUIT)return r;
       if(r==0) {
         if(settings_server_url(candidate)<0){snprintf(notice,sizeof(notice),"Use http://IP:32400 or https://hostname:port.");continue;}
-        snprintf(st->server,sizeof(st->server),"%s",candidate);save(st);return GUI_HOME;
+        snprintf(st->server,sizeof(st->server),"%s",candidate);st->server_id[0]=0;st->connection_kind=st->remote_mode?1:0;save(st);return GUI_HOME;
       }
-    } else if(choice==1) {int r=discover(st);if(r<0)return GUI_QUIT;if(r>0)return GUI_HOME;}
+    } else if(choice==1) {int r=discover(st,0);if(r<0)return GUI_QUIT;if(r>0)return GUI_HOME;}
     else if(choice==2) {
       char token[128];snprintf(token,sizeof(token),"%s",st->account_token);
       int r=gui_keyboard("Plex token",token,sizeof(token),1);if(r==GUI_QUIT)return r;
       if(r==0){if(st->account_token[0] && strcmp(st->account_token,token)){st->client_id[0]=0;settings_ensure_client_id(st);}
-        snprintf(st->token,sizeof(st->token),"%s",token);snprintf(st->account_token,sizeof(st->account_token),"%s",token);save(st);return GUI_HOME;}
+        st->server_id[0]=0;snprintf(st->token,sizeof(st->token),"%s",token);snprintf(st->account_token,sizeof(st->account_token),"%s",token);save(st);return GUI_HOME;}
     } else if(choice==3) {st->bitrate=st->bitrate==1000?2000:st->bitrate==2000?4000:1000;save(st);}
     else if(choice==4) {st->resume=!st->resume;save(st);}
     else if(choice==5) {st->sort=(st->sort+1)%3;save(st);}
@@ -144,7 +152,10 @@ static int settings_screen(settings_t *st,const char *section) {
     else if(choice==15){snprintf(notice,sizeof(notice),"%s",gui_cache_clear()?"Could not clear all cached posters.":"Poster cache cleared.");}
     else if(choice==16){st->bitrate=2000;st->resume=1;st->sort=0;st->autoplay=0;st->subtitles=1;st->performance=2;performance_apply(st->performance);save(st);}
     else if(choice==17){const char *rows2[]={"Unlink account on this Vita","Cancel"};int r=gui_choice("Unlink Plex","This removes this Vita's saved tokens.",rows2,2);if(r==GUI_QUIT)return r;
-      if(r==0){st->token[0]=st->account_token[0]=st->client_id[0]=0;settings_ensure_client_id(st);if(save(st))continue;return GUI_HOME;}}
+      if(r==0){st->token[0]=st->account_token[0]=st->client_id[0]=st->server_id[0]=0;settings_ensure_client_id(st);if(save(st))continue;return GUI_HOME;}}
+    else if(choice==18){const char *modes[]={"Automatic home / remote","Away from home","Back"};int mode=gui_choice("Connection mode","Away mode uses secure remote connections only",modes,3);if(mode==GUI_QUIT)return mode;if(mode==0 || mode==1){st->remote_mode=mode;if(save(st))continue;int result=discover(st,st->server_id[0]!=0);if(result<0)return GUI_QUIT;if(result>0)return GUI_HOME;}}
+    else if(choice==19){int result=discover(st,st->server_id[0]!=0);if(result<0)return GUI_QUIT;if(result>0)return GUI_HOME;}
+    else if(choice==20){const char *info[]={"Enable Remote Access in Plex Media Server settings","Link this Vita account and select your Plex server","Use another Wi-Fi network or a phone hotspot","Plex Pass / Remote Watch Pass may be required","Relay uses 1 Mbps video; direct access is preferred","Help: support.plex.tv (Remote Access)","Back"};if(gui_choice("Watch away from home","Your server must stay online; setup happens on the server",info,7)==GUI_QUIT)return GUI_QUIT;}
 
   }
 }
@@ -163,7 +174,7 @@ static int login(settings_t *st) {
       char token[128]={0};int k=gui_keyboard("Enter Plex token",token,sizeof(token),1);
       if(k==GUI_QUIT)return k;
       if(k==0 && token[0]){if(st->account_token[0] && strcmp(st->account_token,token)){st->client_id[0]=0;settings_ensure_client_id(st);}
-        snprintf(st->token,sizeof(st->token),"%s",token);snprintf(st->account_token,sizeof(st->account_token),"%s",token);save(st);return 0;}
+        st->server_id[0]=0;snprintf(st->token,sizeof(st->token),"%s",token);snprintf(st->account_token,sizeof(st->account_token),"%s",token);save(st);return 0;}
     } else if(!pin.pin_id) {
       plex_pin_create_url(url,sizeof(url));gui_message("Plex sign in","Requesting a link code","If plex.tv is unavailable, you can enter a token manually.");
       if(network_pins(url,st->client_id,body,sizeof(body)) || plex_parse_pin_create(body,&pin))
@@ -189,7 +200,8 @@ int main(void) {
   sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(),0x10000);
   int net=http_init();if(net<0)snprintf(notice,sizeof(notice),"Network setup failed at %s (0x%X). Square retries.",http_init_stage(),net);
   if(net>=0 && st.token[0] && progress_pending())progress_retry(&st);
-  int depth=0,count=0,total=0,fetch=1;
+  int depth=0,count=0,total=0,fetch=1,connection_retry=0;
+  if(net>=0 && st.token[0] && st.remote_mode && st.server_id[0]){connection_retry=1;discover(&st,1);}
   snprintf(locations[0].title,sizeof(locations[0].title),"Your libraries");
   snprintf(locations[0].path,sizeof(locations[0].path),"/library/sections");
   for(;;) {
@@ -201,7 +213,7 @@ int main(void) {
       count=total=0;
       if(plex_build_page_url(st.server,st.token,loc->path,loc->search,
         strstr(loc->path,"/onDeck")?"":strstr(loc->path,"/recentlyAdded")?sorts[1]:depth && !strstr(loc->path,"/children")?sorts[st.sort]:"",loc->offset,BROWSE_MAX_ITEMS,url,sizeof(url))==0 && !request(&st,url,"text/xml")) {
-        browse_page_t page={0};
+        connection_retry=0;browse_page_t page={0};
         if(plex_parse_page(body,&page)<0)snprintf(notice,sizeof(notice),"Unexpected server response. Check server address in Settings.");
         else {
           int local_skip=page.offset==0 && loc->offset>0 && (depth==0 || page.size> BROWSE_MAX_ITEMS)?loc->offset:0;
@@ -212,6 +224,8 @@ int main(void) {
           else notice[0]=0;
         }
       }
+      else if(!connection_retry && st.server_id[0] && !network_cancelled() && !network_exit_requested()){
+        connection_retry=1;if(discover(&st,1)>0){fetch=1;continue;}}
       if(!count && !notice[0])snprintf(notice,sizeof(notice),"%s",loc->search[0]?"No matches. Triangle changes your search.":"No items. Square refreshes; SELECT opens Settings.");
       fetch=0;
     }
