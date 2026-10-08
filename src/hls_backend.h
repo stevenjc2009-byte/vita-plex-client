@@ -16,3 +16,6 @@ int hls_backend_audio_eof(void);
 int hls_backend_buffering(void);
 
 void hls_backend_diagnostics(char *out,unsigned cap);
+
+// kind: 0 HLS, 1 ranged MP4, 2 local MP4, 3 local MPEG-TS.
+int hls_backend_start_source(const char *url,int kind,unsigned offset);

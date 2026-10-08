@@ -3,9 +3,10 @@
 // (memblock net memory, sceNetCtlInit, sceSslInit) and server-cert
 // verification stays ON for plex.tv.
 
-#ifdef __vita__
-
 #include "http.h"
+#include <stdio.h>
+#include <string.h>
+#ifdef __vita__
 #include <psp2/kernel/sysmem.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/net/net.h>
@@ -284,7 +285,7 @@ int http_download_art(const char *url,const char *path,volatile int *cancel) {
 void http_media_abort(void){
  if(request_lock>=0){sceKernelLockMutex(request_lock,1,NULL);if(active_media_request>=0)sceHttpAbortRequest(active_media_request);sceKernelUnlockMutex(request_lock,1);}
 }
-int http_media_fetch(const char *url,void *data,unsigned cap,unsigned *used,volatile int *cancel){
+static int media_fetch(const char *url,void *data,unsigned cap,unsigned *used,volatile int *cancel,int range,uint64_t offset,uint64_t *total){
  int tmpl=-1,conn=-1,req=-1,r=-1,status=0;uint64_t start=sceKernelGetProcessTimeWide();
  if(!url || !data || !cap || !used || !cancel)return -1;*used=0;
  if(__atomic_load_n(cancel,__ATOMIC_ACQUIRE))return -2;
@@ -298,8 +299,13 @@ int http_media_fetch(const char *url,void *data,unsigned cap,unsigned *used,vola
  active_media_request=req;int stopped=__atomic_load_n(cancel,__ATOMIC_ACQUIRE);
  if(request_lock>=0)sceKernelUnlockMutex(request_lock,1);
  if(stopped){r=-2;goto out;}
+ if(range){char header[96];if(offset>UINT64_MAX-cap){r=-13;goto out;}snprintf(header,sizeof(header),"bytes=%llu-%llu",(unsigned long long)offset,(unsigned long long)(offset+cap-1));r=sceHttpAddRequestHeader(req,"Range",header,SCE_HTTP_HEADER_OVERWRITE);if(r<0)goto out;}
  r=sceHttpSendRequest(req,NULL,0);if(r<0)goto out;
- r=sceHttpGetStatusCode(req,&status);if(r<0)goto out;if(status!=200){r=-status;goto out;}
+ r=sceHttpGetStatusCode(req,&status);if(r<0)goto out;if(status!=(range?206:200)){r=-status;goto out;}
+ unsigned range_bytes=0;
+ if(range){char *headers=NULL;unsigned header_size=0;const char *value=NULL;unsigned value_size=0;
+  if(sceHttpGetAllResponseHeaders(req,&headers,&header_size)<0 || sceHttpParseResponseHeader(headers,header_size,"Content-Range",&value,&value_size)<0 || http_range_header(value,value_size,offset,cap,total,&range_bytes)){r=-13;goto out;}}
+
  unsigned long long length=0;int known_length=!sceHttpGetResponseContentLength(req,&length);if(known_length && length>cap){r=-9;goto out;}
  for(;;){
   if(__atomic_load_n(cancel,__ATOMIC_ACQUIRE)){r=-2;goto out;}
@@ -307,7 +313,7 @@ int http_media_fetch(const char *url,void *data,unsigned cap,unsigned *used,vola
   if(*used==cap){unsigned char extra;r=sceHttpReadData(req,&extra,1);if(r==0)break;if(r>0)r=-9;goto out;}
   r=sceHttpReadData(req,(unsigned char*)data+*used,cap-*used);if(r<0)goto out;if(!r)break;*used+=(unsigned)r;
  }
- r=known_length && length!=*used?-10:0;
+ r=(known_length && length!=*used) || (range && range_bytes!=*used)?-10:0;
 out:
  if(request_lock>=0)sceKernelLockMutex(request_lock,1,NULL);
  if(active_media_request==req)active_media_request=-1;
@@ -316,6 +322,9 @@ out:
  if(conn>=0)sceHttpDeleteConnection(conn);if(tmpl>=0)sceHttpDeleteTemplate(tmpl);
  if(r<0)*used=0;return r;
 }
+
+int http_media_fetch(const char *u,void *d,unsigned c,unsigned *n,volatile int *x){return media_fetch(u,d,c,n,x,0,0,NULL);}
+int http_media_range(const char *u,void *d,unsigned c,unsigned *n,uint64_t o,uint64_t *t,volatile int *x){if(!t)return -1;return media_fetch(u,d,c,n,x,1,o,t);}
 
 #else
 
@@ -348,4 +357,18 @@ int http_last_error(void) { return 0; }
 int http_last_ssl_err(void) { return 0; }
 unsigned http_last_ssl_detail(void) { return 0; }
 
+#endif
+
+// Bounded decimal parsing avoids unsigned overflow and rejects wildcard totals.
+static int range_number(const char **p,const char *end,uint64_t *n){*n=0;const char *begin=*p;while(*p<end && **p>='0' && **p<='9'){unsigned digit=(unsigned)(*(*p)++-'0');if(*n>(UINT64_MAX-digit)/10)return -1;*n=*n*10+digit;}return begin==*p?-1:0;}
+int http_range_header(const char *v,unsigned len,uint64_t offset,unsigned cap,uint64_t *total,unsigned *bytes){
+ if(!v || !total || !bytes || len<10 || len>128 || memcmp(v,"bytes ",6))return -1;
+ const char *p=v+6,*end=v+len;uint64_t first,last,size;
+ if(range_number(&p,end,&first) || p==end || *p++!='-' || range_number(&p,end,&last) || p==end || *p++!='/' || range_number(&p,end,&size))return -1;
+ while(p<end && (*p==' ' || *p=='\r' || *p=='\n'))p++;
+ if(p!=end || first!=offset || last<first || last>=size || last-first>=cap)return -1;
+ *total=size;*bytes=(unsigned)(last-first+1);return 0;
+}
+#ifndef __vita__
+int http_media_range(const char*u,void*d,unsigned c,unsigned*n,uint64_t o,uint64_t*t,volatile int*x){(void)u;(void)d;(void)c;(void)o;(void)t;(void)x;if(n)*n=0;return -1;}
 #endif

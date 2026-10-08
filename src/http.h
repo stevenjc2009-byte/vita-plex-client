@@ -34,3 +34,7 @@ void http_media_abort(void);
 
 #define HTTP_MEDIA_TIMEOUT (-11)
 #define HTTP_MEDIA_DISCONNECTED (-12)
+
+#include <stdint.h>
+int http_media_range(const char *url,void *data,unsigned cap,unsigned *used,uint64_t offset,uint64_t *total,volatile int *cancel);
+int http_range_header(const char *value,unsigned length,uint64_t offset,unsigned cap,uint64_t *total,unsigned *bytes);

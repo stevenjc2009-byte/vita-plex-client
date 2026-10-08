@@ -3,7 +3,7 @@
 // via the promoter utility. Vita-only; host builds see stubs.
 
 // Must match VITA_VERSION in CMakeLists and the release tag (v + this).
-#define APP_VERSION "01.40"
+#define APP_VERSION "01.41"
 #define UPDATE_REPO "stevenjc2009-byte/vita-plex-client"
 #define UPDATE_VPK_PATH "ux0:data/plex-client/update.vpk"
 int update_version_newer(const char *candidate, const char *current);
@@ -20,4 +20,8 @@ int update_download(const char *dl_url,
 
 // Installs UPDATE_VPK_PATH over this app. Does not return on success
 // (exits the process so the user can relaunch the new build).
-int update_install(void);
+
+
+int update_install_version(const char *tag);
+
+int update_release(const char *json,const char *current,char *url,unsigned url_cap,char *tag,unsigned tag_cap);

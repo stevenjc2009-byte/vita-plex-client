@@ -532,6 +532,7 @@ int gui_details(const browse_item_t *it,const char *server,const char *token,con
   }
   free(img);return result;
 }
+void gui_skip_overlay(unsigned *buffer,int credits){unsigned *saved=fb;fb=buffer;rect(690,354,246,60,PANEL);text(credits?"Skip Credits / R":"Skip Intro / R",704,371,0,GOLD,220);fb=saved;}
 void gui_player_overlay(unsigned *buffer,const char *title,unsigned pos,unsigned duration,int paused,const char *message) {
   unsigned *saved=fb;fb=buffer;
   rect(0,0,W,64,PANEL);text(title,24,13,1,WHITE,710);text("Tracks / Square",768,18,0,GOLD,185);

@@ -9,6 +9,7 @@
 static int got_audio,disconnected;
 int sceNetCtlInetGetState(int *state){*state=disconnected?0:1;return 0;}
 int hls_backend_start(const char *url){assert(url);got_audio=0;return 0;}
+int hls_backend_start_source(const char*u,int k,unsigned o){(void)k;(void)o;return hls_backend_start(u);}
 void hls_backend_stop(void){}
 int hls_backend_active(void){active_calls++;return active_calls>=3 && !__atomic_load_n(&audio_outputs,__ATOMIC_SEQ_CST);}
 int hls_backend_error(void){return 0;}
@@ -25,6 +26,7 @@ int hls_backend_pause(int paused){(void)paused;return 0;}
 int hls_backend_buffering(void){return 0;}
 void hls_backend_diagnostics(char *out,unsigned cap){snprintf(out,cap,"mock decoder ready");}
 void gui_player_end_frame(const unsigned *frame){(void)frame;}
+void gui_skip_overlay(unsigned *frame,int credits){(void)frame;(void)credits;}
 int sceKernelStartThread(int id,unsigned n,void *arg){(void)n;(void)arg;assert(id==101);thread_started=1;return pthread_create(&audio_mock,NULL,pump,NULL);}
 int sceAudioOutOutput(int id,const void *data){assert(id==1 && data);const short *pcm=data;
  for(unsigned i=0;i<1024*2;i++)assert(pcm[i]==(i<711*2?123:0));

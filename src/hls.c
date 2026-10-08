@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <math.h>
 
 int hls_segment(const char *body,uint64_t wanted,char *uri,unsigned cap,uint64_t *sequence){
  if(!body || strncmp(body,"#EXTM3U",7) || !uri || !cap || !sequence)return -1;
@@ -58,4 +59,13 @@ int hls_variant(const char *body,char *uri,unsigned cap){
   p=end;while(*p=='\r' || *p=='\n')p++;
  }
  return variant?-1:0;
+}
+int hls_duration(const char *body,uint64_t wanted,unsigned *milliseconds){
+ char uri[2048];uint64_t actual=0;if(!milliseconds || hls_segment(body,wanted,uri,sizeof(uri),&actual)!=1)return -1;
+ uint64_t seq=0;const char *start=strstr(body,"#EXT-X-MEDIA-SEQUENCE:");if(start)seq=strtoull(start+22,NULL,10);
+ double duration=0;for(const char *p=body;*p;){const char *end=strpbrk(p,"\r\n");if(!end)end=p+strlen(p);
+  if(end-p>=8 && !strncmp(p,"#EXTINF:",8)){char *tail;duration=strtod(p+8,&tail);if(tail==p+8 || tail>end || (*tail!=',' && tail!=end) || !isfinite(duration) || duration<=0 || duration>120)return -1;}
+  else if(p<end && *p!='#'){if(seq==actual){if(duration<=0)return -1;*milliseconds=(unsigned)(duration*1000+0.5);return *milliseconds?0:-1;}seq++;duration=0;}
+  p=end;while(*p=='\r' || *p=='\n')p++;
+ }return -1;
 }

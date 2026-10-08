@@ -5,6 +5,7 @@
 #include "http.h"
 #include "player.h"
 #include "update.h"
+#include "offline.h"
 #include "gui.h"
 #include "session.h"
 #include "network.h"
@@ -112,11 +113,19 @@ static int choose_view(settings_t *st,const location_t *loc,location_t *next){
  int value=gui_choice(selected==4?"Genre":"Year","Select a server-provided filter",names,n);if(value==GUI_QUIT)return -2;if(value<0)return -1;
  char encoded[768];plex_url_encode(values[value].key,encoded,sizeof(encoded));int count=snprintf(next->path,sizeof(next->path),"/library/sections/%s/all?%s=%s",next->section,selected==4?"genre":"year",encoded);if(count<0 || count>=(int)sizeof(next->path))return -1;return 1;
 }
+static int app_update(int automatic){
+ char download[1024],tag[64];gui_message("App update","Checking GitHub releases","O cancels.");int result=update_check(download,sizeof(download),tag,sizeof(tag));
+ if(result<0){if(!automatic)snprintf(notice,sizeof(notice),"Update check failed. Try again when connected.");return 0;}if(!result){if(!automatic)snprintf(notice,sizeof(notice),"This build is current.");return 0;}
+ const char *rows[]={"Download and install update","Later"};int selected=gui_choice("Update available",tag,rows,2);if(selected==GUI_QUIT)return selected;
+ if(!selected){gui_message("App update","Downloading update from GitHub","O cancels. Your settings and libraries are retained.");if(update_download(download,NULL)){snprintf(notice,sizeof(notice),"Download failed; no incomplete VPK was retained.");return 0;}
+  gui_message("App update","Validating and installing update","The app closes after installation. Relaunch Plex from LiveArea.");int installed=update_install_version(tag);if(installed<0)snprintf(notice,sizeof(notice),"Update installation failed (0x%X). Current app retained.",installed);}
+ return 0;
+}
 static int settings_screen(settings_t *st,const char *section) {
   int cursor=0;
   for(;;) {
     if(network_exit_requested())return GUI_QUIT;
-    char server[320],quality[100],resume[80],sorting[80],clocks[80],autoplay[80],subtitles[80],remote[100],remote_quality[100],relay_quality[100],adaptive[100];
+    char server[320],quality[100],resume[80],sorting[80],clocks[80],autoplay[80],subtitles[80],remote[100],remote_quality[100],relay_quality[100],adaptive[100],direct_play[100],skip[100],offline[100],quota[100],auto_update[100];
     snprintf(server,sizeof(server),"Server: %s",st->server);
     snprintf(quality,sizeof(quality),"Video quality: %d Mbps (H.264 / AAC)",st->bitrate/1000);
     snprintf(resume,sizeof(resume),"Resume playback: %s",st->resume?"On":"Off");
@@ -126,12 +135,13 @@ static int settings_screen(settings_t *st,const char *section) {
     snprintf(subtitles,sizeof(subtitles),"Subtitles: %s",st->subtitles?"Server default / selected":"Off");
     snprintf(remote,sizeof(remote),"Connection: %s",st->remote_mode?"Away from home":"Automatic home / remote");
     snprintf(remote_quality,sizeof(remote_quality),"Remote quality: %d kbps",st->remote_bitrate);snprintf(relay_quality,sizeof(relay_quality),"Relay quality: %d kbps",st->relay_bitrate);snprintf(adaptive,sizeof(adaptive),"Adapt quality on sustained buffering: %s",st->adaptive?"On":"Off");
+    snprintf(direct_play,sizeof(direct_play),"Compatible Direct Play: %s",st->direct_play?"On":"Off");snprintf(skip,sizeof(skip),"Skip intro / credits buttons: %s",st->skip_markers?"On":"Off");snprintf(offline,sizeof(offline),"Offline downloads: %s",st->offline?"On":"Off");snprintf(quota,sizeof(quota),"Download storage limit: %d MB",st->offline_quota);snprintf(auto_update,sizeof(auto_update),"Check GitHub updates at launch: %s",st->auto_update?"On":"Off");
     const char *rows[]={server,"Find and select Plex server","Enter / replace Plex token",quality,resume,sorting,
       "Refresh libraries",section && *section?"Scan this library for new media":"Scan all libraries for new media",
-      "Check for app updates","About / controls",clocks,autoplay,subtitles,"Connection diagnostics","Retry saved playback progress","Clear poster cache","Reset preferences","Unlink Plex account",remote,"Reconnect selected server","Remote access setup",remote_quality,relay_quality,adaptive,"Server favorites","Saved Plex accounts","Back"};
-    int choice=gui_choice_cursor("Settings",notice[0]?notice:"Connection, playback and library preferences",rows,27,&cursor);
+      "Check for app updates","About / controls",clocks,autoplay,subtitles,"Connection diagnostics","Retry saved playback progress","Clear poster cache","Reset preferences","Unlink Plex account",remote,"Reconnect selected server","Remote access setup",remote_quality,relay_quality,adaptive,"Server favorites","Saved Plex accounts",direct_play,skip,offline,quota,"Manage / play downloads",auto_update,"Back"};
+    int choice=gui_choice_cursor("Settings",notice[0]?notice:"Connection, playback and library preferences",rows,33,&cursor);
     if(choice==GUI_QUIT)return GUI_QUIT;
-    if(choice<0 || choice==26)return GUI_BACK;
+    if(choice<0 || choice==32)return GUI_BACK;
     if(choice==0) {
       char candidate[256];snprintf(candidate,sizeof(candidate),"%s",st->server);
       int r=gui_keyboard("Server address",candidate,sizeof(candidate),0);if(r==GUI_QUIT)return r;
@@ -151,16 +161,7 @@ static int settings_screen(settings_t *st,const char *section) {
     else if(choice==6)return GUI_HOME;
     else if(choice==7) {if(library_scan(st,section,body,sizeof(body),notice,sizeof(notice))==GUI_QUIT)return GUI_QUIT;
     } else if(choice==8) {
-      char download[1024],tag[64];gui_message("App update","Checking GitHub releases","This can take a few seconds.");
-      int r=update_check(download,sizeof(download),tag,sizeof(tag));
-      if(r<0)snprintf(notice,sizeof(notice),"Update check failed. Try again when connected.");
-      else if(!r)snprintf(notice,sizeof(notice),"This build is current.");
-      else {
-        const char *rows2[]={"Download update VPK","Cancel"};
-        int r2=gui_choice("Update available",tag,rows2,2);if(r2==GUI_QUIT)return r2;
-        if(r2==0){gui_message("App update","Downloading VPK","Install ux0:data/plex-client/update.vpk with VitaShell after exiting.");
-          snprintf(notice,sizeof(notice),"%s",update_download(download,NULL)==0?"Downloaded. Install update.vpk using VitaShell.":"Download failed; no incomplete VPK was retained.");}
-      }
+        if(app_update(0)==GUI_QUIT)return GUI_QUIT;
     } else if(choice==9) {
       const char *rows2[]={"Back"};
       if(gui_choice("Plex for Vita " APP_VERSION,"X opens / pauses; O returns / stops. Triangle searches; Square refreshes; L/R changes pages.",rows2,1)==GUI_QUIT)return GUI_QUIT;
@@ -181,7 +182,7 @@ static int settings_screen(settings_t *st,const char *section) {
       else if(r==1 || r==2){const char *confirm[]={"Discard these saved positions","Cancel"};int choice=gui_choice("Discard pending progress","Positions already accepted by Plex are unaffected.",confirm,2);if(choice==GUI_QUIT)return choice;if(choice==0)snprintf(notice,sizeof(notice),"%s",progress_discard(st,r==1)?"Could not save journal. Pending positions retained.":"Pending positions discarded.");}
     }
     else if(choice==15){snprintf(notice,sizeof(notice),"%s",gui_cache_clear()?"Could not clear all cached posters.":"Poster cache cleared.");}
-    else if(choice==16){st->bitrate=2000;st->resume=1;st->sort=0;st->autoplay=0;st->subtitles=1;st->performance=2;performance_apply(st->performance);save(st);}
+    else if(choice==16){st->bitrate=2000;st->resume=1;st->sort=0;st->autoplay=0;st->subtitles=1;st->performance=2;st->remote_bitrate=2000;st->relay_bitrate=1000;st->adaptive=1;st->direct_play=1;st->skip_markers=1;st->offline=0;st->offline_quota=offline_usage()>512ULL*1024*1024?1024:512;st->auto_update=1;performance_apply(st->performance);save(st);}
     else if(choice==17){const char *rows2[]={"Unlink account on this Vita","Cancel"};int r=gui_choice("Unlink Plex","This removes this Vita's saved tokens.",rows2,2);if(r==GUI_QUIT)return r;
       if(r==0){st->token[0]=st->account_token[0]=st->client_id[0]=st->server_id[0]=0;settings_ensure_client_id(st);if(save(st))continue;return GUI_HOME;}}
     else if(choice==18){const char *modes[]={"Automatic home / remote","Away from home","Back"};int mode=gui_choice("Connection mode","Away mode uses secure remote connections only",modes,3);if(mode==GUI_QUIT)return mode;if(mode==0 || mode==1){st->remote_mode=mode;if(save(st))continue;int result=discover(st,st->server_id[0]!=0);if(result<0)return GUI_QUIT;if(result>0)return GUI_HOME;}}
@@ -189,6 +190,12 @@ static int settings_screen(settings_t *st,const char *section) {
     else if(choice==21){st->remote_bitrate=st->remote_bitrate==1000?2000:st->remote_bitrate==2000?4000:1000;save(st);}
     else if(choice==22){st->relay_bitrate=st->relay_bitrate==1000?500:1000;save(st);}
     else if(choice==23){st->adaptive=!st->adaptive;save(st);}
+    else if(choice==26){st->direct_play=!st->direct_play;save(st);}
+    else if(choice==27){st->skip_markers=!st->skip_markers;save(st);}
+    else if(choice==28){st->offline=!st->offline;save(st);}
+    else if(choice==29){const char *limits[]={"128 MB","256 MB","512 MB","1024 MB","Back"};int value=gui_choice("Download storage limit","Includes completed and interrupted downloads",limits,5);if(value==GUI_QUIT)return value;if(value>=0 && value<4){int next=128<<value;if(offline_usage()>(uint64_t)next*1024*1024)snprintf(notice,sizeof(notice),"Delete downloads before lowering the storage limit.");else{st->offline_quota=next;save(st);}}}
+    else if(choice==30){if(offline_menu(st,notice,sizeof(notice))==GUI_QUIT)return GUI_QUIT;}
+    else if(choice==31){st->auto_update=!st->auto_update;save(st);}
     else if(choice==24 || choice==25){int r=profiles_menu(st,choice==25);if(r==GUI_QUIT || r==GUI_HOME)return r;}
     else if(choice==20){const char *info[]={"Enable Remote Access in Plex Media Server settings","Link this Vita account and select your Plex server","Use another Wi-Fi network or a phone hotspot","Plex Pass / Remote Watch Pass may be required","Relay uses 1 Mbps video; direct access is preferred","Help: support.plex.tv (Remote Access)","Back"};if(gui_choice("Watch away from home","Your server must stay online; setup happens on the server",info,7)==GUI_QUIT)return GUI_QUIT;}
 
@@ -234,6 +241,7 @@ int main(void) {
   gui_message("Plex for Vita","Connecting","Loading your account and saved server settings.");
   sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(),0x10000);
   int net=http_init();if(net<0)snprintf(notice,sizeof(notice),"Network setup failed at %s (0x%X). Square retries.",http_init_stage(),net);
+  if(net>=0 && st.auto_update && app_update(1)==GUI_QUIT){gui_shutdown();http_shutdown();performance_restore();sceKernelExitProcess(0);return 0;}
   int depth=0,count=0,total=0,fetch=1,connection_retry=0;
   // Identify a manually configured endpoint before journaling checkpoints.
   // This lets the first subsequent LAN/WAN change use a stable server scope.

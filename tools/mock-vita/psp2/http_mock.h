@@ -29,3 +29,7 @@ int sceIoClose(int);int sceIoRemove(const char*);
 #define SCE_HTTP_ERROR_ALREADY_INITED ((int)0x80431020)
 #define SCE_SSL_ERROR_ALREADY_INITED ((int)0x80435020)
 int sceSysmoduleIsLoaded(int);
+
+int sceHttpGetAllResponseHeaders(int,char**,unsigned*);
+#define SCE_HTTP_HEADER_OVERWRITE 1
+int sceHttpParseResponseHeader(const char*,unsigned,const char*,const char**,unsigned*);

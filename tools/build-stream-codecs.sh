@@ -21,7 +21,7 @@ export PATH="$VITASDK/bin:$PATH"
  --extra-cflags="-Os -ffunction-sections -fdata-sections -Wno-error=incompatible-pointer-types -Wno-error=enum-int-mismatch" \
  --extra-ldflags="-Wl,--gc-sections" --disable-shared --enable-static --disable-programs --disable-doc --disable-autodetect --disable-network \
  --disable-avfilter --disable-swscale --disable-swresample --disable-avdevice --disable-encoders \
- --disable-decoders --enable-decoder=h264,h264_vita,aac_vita --disable-demuxers --enable-demuxer=mpegts --disable-muxers \
+ --disable-decoders --enable-decoder=h264,h264_vita,aac_vita --disable-demuxers --enable-demuxer=mpegts,mov --disable-muxers \
  --disable-parsers --enable-parser=aac,aac_latm,ac3,h264,mpegaudio --disable-protocols --disable-bsfs \
  --disable-iconv --disable-lzma --disable-sdl2 --disable-xlib --enable-pthreads
 make -j"${PLEX_CODEC_JOBS:-8}"

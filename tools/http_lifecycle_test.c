@@ -37,6 +37,9 @@ int sceHttpSetAutoRedirect(int i,int v){(void)i;(void)v;return 0;}int sceHttpGet
 int sceIoOpen(const char*p,int f,int m){(void)p;(void)f;(void)m;files++;return 20;}
 int sceIoWrite(int i,const void*p,unsigned n){assert(i==20 && p);written+=n;return (int)n;}
 int sceIoClose(int i){assert(i==20);files--;return close_fail?-1:0;}int sceIoRemove(const char*p){assert(p);removed++;return 0;}
+static const char *range_header="bytes 0-99/200";
+int sceHttpGetAllResponseHeaders(int id,char **out,unsigned *len){(void)id;*out=(char*)range_header;*len=(unsigned)strlen(range_header);return 0;}
+int sceHttpParseResponseHeader(const char *headers,unsigned len,const char *name,const char **out,unsigned *size){assert(!strcmp(name,"Content-Range"));*out=headers;*size=len;return 0;}
 int main(void){
  for(int fault=1;fault<=12;fault++){step=0;fail_step=fault;int result=http_init();if(fault<=8){assert(result<0);empty();}else {assert(!result);char body[16];payload_size=10;http_prepare(5);assert(!http_get("http://test","id","xml",body,sizeof(body)));assert(http_get("https://test","id","xml",body,sizeof(body))<0 && http_last_error()==-1);http_shutdown();empty();}}
  step=fail_step=0;assert(!http_init());char body[16];http_prepare(5);payload_size=10;assert(!http_get("http://test","id","text/xml",body,sizeof(body)) && strlen(body)==10);
@@ -56,5 +59,6 @@ int main(void){
  payload_size=100;status=403;assert(http_media_fetch("http://test",media,sizeof(media),&used,&cancel)==-403 && !used);status=200;
  cancel=1;assert(http_media_fetch("http://test",media,sizeof(media),&used,&cancel)==-2 && !used);cancel=0;
  media_abort_read=1;int before=aborted;assert(http_media_fetch("http://test",media,sizeof(media),&used,&cancel)<0 && aborted>before);media_abort_read=0;
+ uint64_t total=0;status=206;assert(!http_media_range("http://test",media,sizeof(media),&used,0,&total,&cancel) && used==100 && total==200);range_header="bytes 1-100/200";assert(http_media_range("http://test",media,sizeof(media),&used,0,&total,&cancel)==-13 && !used);status=200;
  http_shutdown();empty();external_modules=1;step=fail_step=0;assert(!http_init() && !modules);http_shutdown();empty();puts("HTTP initialization unwind, cancellation, truncation, download bounds and close failure tests passed");return 0;
 }

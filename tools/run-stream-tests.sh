@@ -35,3 +35,26 @@ for name in normal short-audio short-video long; do "$scratch/stream-test" "$scr
 mkdir -p "$scratch/audio"
 "$ffmpeg" -v error -y -f lavfi -i sine=frequency=440:sample_rate=48000:duration=1 -c:a aac -ac 2 -f hls -hls_time 1 -hls_playlist_type vod -hls_segment_filename "$scratch/audio/%d.ts" "$scratch/audio/index.m3u8"
 "$scratch/stream-test" "$scratch/audio" audio
+
+mkdir -p "$scratch/mp4"
+"$ffmpeg" -v error -y -f lavfi -i testsrc2=size=320x180:rate=24:duration=3 -f lavfi -i sine=frequency=440:sample_rate=48000:duration=3 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -g 24 -c:a aac -ac 2 "$scratch/mp4/test.mp4"
+"$scratch/stream-test" "$scratch/mp4" mp4
+"$scratch/stream-test" "$scratch/mp4" local
+"$scratch/stream-test" "$scratch/mp4" seek
+cat "$scratch/normal/0.ts" "$scratch/normal/1.ts" "$scratch/normal/2.ts" > "$scratch/mp4/test.ts"
+"$scratch/stream-test" "$scratch/mp4" tsseek
+"$ffmpeg" -v error -y -i "$scratch/mp4/test.mp4" -c copy -movflags +faststart "$scratch/mp4/fast.mp4"
+mv "$scratch/mp4/fast.mp4" "$scratch/mp4/test.mp4"
+"$scratch/stream-test" "$scratch/mp4" mp4
+
+python_bin=${PYTHON:-python3}
+command -v "$python_bin" >/dev/null 2>&1 || python_bin=python
+"$python_bin" - "$scratch" <<'PY'
+from pathlib import Path
+import struct,sys
+p=Path(sys.argv[1]);offset=0;points=[]
+for i in range(3):
+ points.append(struct.pack('<2I',i*1000,offset));offset+=(p/'normal'/f'{i}.ts').stat().st_size
+(p/'mp4/test.ts.idx').write_bytes(b''.join(points))
+PY
+"$scratch/stream-test" "$scratch/mp4" tsseek

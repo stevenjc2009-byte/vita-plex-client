@@ -33,6 +33,7 @@ static struct {
  volatile int stop;
  int running,ready,finished,error,transport_error,paused,started,audio_present;
  const char *stage;
+ int source_kind,indexed;unsigned seek_offset,file_skip;uint64_t file_at,file_size,cache_at;unsigned cache_size;FILE *file;
  char url[4096];char *playlist;unsigned char *segment;
  unsigned segment_size,segment_at,variants;uint64_t sequence;
  video_slot_t video[VIDEO_QUEUE],shown;audio_slot_t audio[AUDIO_QUEUE],playing;
@@ -136,6 +137,31 @@ static int read_media(void *unused,unsigned char *data,int size){
  unsigned n=stream.segment_size-stream.segment_at;if(n>(unsigned)size)n=(unsigned)size;
  memcpy(data,stream.segment+stream.segment_at,n);stream.segment_at+=n;return (int)n;
 }
+static int read_file(void *unused,unsigned char *data,int size){
+ (void)unused;if(cancelled())return AVERROR_EXIT;
+ if(stream.source_kind>=2){size_t n=fread(data,1,(unsigned)size,stream.file);return n?(int)n:ferror(stream.file)?AVERROR(EIO):AVERROR_EOF;}
+ if(stream.file_size && stream.file_at>=stream.file_size)return AVERROR_EOF;
+ if(!stream.cache_size || stream.file_at<stream.cache_at || stream.file_at>=stream.cache_at+stream.cache_size){
+  unsigned used=0;uint64_t total=0,begin=now_us();int r=-1;
+  for(int attempt=0;attempt<3;attempt++){r=http_media_range(stream.url,stream.segment,512*1024,&used,stream.file_at,&total,&stream.stop);if(!r || r==-2 || r==-401 || r==-403 || r==-404 || r==-13 || r==HTTP_MEDIA_DISCONNECTED)break;delay_us(200000);}
+  if(r<0 || !used || total>INT64_MAX || (stream.file_size && stream.file_size!=total)){stream.transport_error=r<0?r:-13;return AVERROR(EIO);}
+  stream.file_size=total;stream.cache_at=stream.file_at;stream.cache_size=used;
+  pthread_mutex_lock(&stream.lock);stream.download_bytes+=used;stream.download_us+=now_us()-begin;pthread_mutex_unlock(&stream.lock);
+ }
+ unsigned at=(unsigned)(stream.file_at-stream.cache_at),n=stream.cache_size-at;if(n>(unsigned)size)n=(unsigned)size;
+ memcpy(data,stream.segment+at,n);stream.file_at+=n;return (int)n;
+}
+static int64_t seek_file(void *unused,int64_t offset,int whence){
+ (void)unused;if(cancelled())return AVERROR_EXIT;
+ if(whence==AVSEEK_SIZE){if(stream.source_kind>=2){long at=ftell(stream.file);if(at<0 || fseek(stream.file,0,SEEK_END))return AVERROR(EIO);long size=ftell(stream.file);if(fseek(stream.file,at,SEEK_SET) || size<(long)stream.file_skip)return AVERROR(EIO);return size-stream.file_skip;}
+  if(!stream.file_size){unsigned char one;int r=read_file(NULL,&one,1);if(r<0)return r;stream.file_at=0;}return (int64_t)stream.file_size;
+ }
+ whence&=~AVSEEK_FORCE;
+ if(stream.source_kind>=2){if(whence==SEEK_SET)offset+=stream.file_skip;if(offset>0x7fffffffLL || offset<(-0x7fffffffLL) || fseek(stream.file,(long)offset,whence))return AVERROR(EIO);return ftell(stream.file)-stream.file_skip;}
+ int64_t base=whence==SEEK_SET?0:whence==SEEK_CUR?(int64_t)stream.file_at:whence==SEEK_END?(int64_t)stream.file_size:-1;
+ if(base<0 || offset>INT64_MAX-base || offset< -base)return AVERROR(EINVAL);uint64_t at=(uint64_t)(base+offset);
+ if(stream.file_size && at>stream.file_size)return AVERROR(EINVAL);stream.file_at=at;return (int64_t)at;
+}
 static uint64_t timestamp(AVFrame *frame,AVStream *track){
  int64_t pts=frame->best_effort_timestamp;
  if(pts==AV_NOPTS_VALUE)pts=frame->pts;
@@ -156,6 +182,7 @@ static uint64_t timestamp(AVFrame *frame,AVStream *track){
 static int queue_video(AVFrame *f,AVStream *track){
  if(f->width<=0 || f->height<=0 || (f->width&1) || (f->height&1) || f->width>1280 || f->height>720 ||
     (f->format!=AV_PIX_FMT_NV12 && f->format!=AV_PIX_FMT_YUV420P))return AVERROR_INVALIDDATA;
+ uint64_t stamp=timestamp(f,track);if(stamp<stream.seek_offset)return 0;stamp-=stream.seek_offset;
  while(!cancelled()){
   pthread_mutex_lock(&stream.lock);int full=stream.vn==VIDEO_QUEUE;pthread_mutex_unlock(&stream.lock);if(!full)break;delay_us(2000);
  }if(cancelled())return AVERROR_EXIT;
@@ -171,22 +198,25 @@ static int queue_video(AVFrame *f,AVStream *track){
  }
  slot->width=w;slot->height=h;slot->aspect=(float)w/h;
  if(f->sample_aspect_ratio.num>0 && f->sample_aspect_ratio.den>0)slot->aspect*=av_q2d(f->sample_aspect_ratio);
- slot->stamp=timestamp(f,track);
+ slot->stamp=stamp;
  pthread_mutex_lock(&stream.lock);stream.vw=(stream.vw+1)%VIDEO_QUEUE;stream.vn++;stream.ready=1;
  if(slot->stamp>stream.last_stamp)stream.last_stamp=slot->stamp;pthread_mutex_unlock(&stream.lock);return 0;
 }
 static int queue_audio(AVFrame *f,AVStream *track){
  unsigned channels=(unsigned)f->ch_layout.nb_channels;
  if((channels!=1 && channels!=2) || f->sample_rate<8000 || f->sample_rate>48000 || f->nb_samples<1 || f->nb_samples>2048 || (f->format!=AV_SAMPLE_FMT_S16 && f->format!=AV_SAMPLE_FMT_FLTP))return AVERROR_INVALIDDATA;
+ uint64_t stamp=timestamp(f,track);unsigned trim=0;
+ if(stamp<stream.seek_offset){uint64_t gap=stream.seek_offset-stamp;trim=(unsigned)(gap*(unsigned)f->sample_rate/1000);if(trim>=(unsigned)f->nb_samples)return 0;stamp+=(uint64_t)trim*1000/(unsigned)f->sample_rate;}
+ stamp=stamp>=stream.seek_offset?stamp-stream.seek_offset:0;
  while(!cancelled()){
   pthread_mutex_lock(&stream.lock);int full=stream.an==AUDIO_QUEUE;pthread_mutex_unlock(&stream.lock);if(!full)break;delay_us(2000);
  }if(cancelled())return AVERROR_EXIT;
- audio_slot_t *slot=stream.audio+stream.aw;slot->size=(unsigned)f->nb_samples*channels*2;slot->rate=(unsigned)f->sample_rate;slot->channels=channels;
- slot->stamp=timestamp(f,track);
- if(f->format==AV_SAMPLE_FMT_S16){if(!f->data[0])return AVERROR_INVALIDDATA;memcpy(slot->data,f->data[0],slot->size);}
- else{short *pcm=(short*)slot->data;for(unsigned c=0;c<channels;c++){if(!f->extended_data[c])return AVERROR_INVALIDDATA;const float *samples=(const float*)f->extended_data[c];for(int n=0;n<f->nb_samples;n++){float sample=samples[n]*32768.0f;pcm[n*channels+c]=sample>=32767?32767:sample<=-32768?-32768:(short)sample;}}}
+ audio_slot_t *slot=stream.audio+stream.aw;slot->size=((unsigned)f->nb_samples-trim)*channels*2;slot->rate=(unsigned)f->sample_rate;slot->channels=channels;
+ slot->stamp=stamp;
+ if(f->format==AV_SAMPLE_FMT_S16){if(!f->data[0])return AVERROR_INVALIDDATA;memcpy(slot->data,f->data[0]+trim*channels*2,slot->size);}
+ else{short *pcm=(short*)slot->data;for(unsigned c=0;c<channels;c++){if(!f->extended_data[c])return AVERROR_INVALIDDATA;const float *samples=(const float*)f->extended_data[c];for(int n=(int)trim;n<f->nb_samples;n++){float sample=samples[n]*32768.0f;pcm[(n-trim)*channels+c]=sample>=32767?32767:sample<=-32768?-32768:(short)sample;}}}
  pthread_mutex_lock(&stream.lock);stream.aw=(stream.aw+1)%AUDIO_QUEUE;stream.an++;stream.ready=1;if(!stream.audio_present)stream.audio_present=1;
- if(slot->stamp+(unsigned)f->nb_samples*1000/slot->rate>stream.last_stamp)stream.last_stamp=slot->stamp+(unsigned)f->nb_samples*1000/slot->rate;
+ if(slot->stamp+((unsigned)f->nb_samples-trim)*1000/slot->rate>stream.last_stamp)stream.last_stamp=slot->stamp+((unsigned)f->nb_samples-trim)*1000/slot->rate;
  pthread_mutex_unlock(&stream.lock);return 0;
 }
 static int decode_packet(AVCodecContext *codec,AVPacket *packet,AVFrame *frame,AVStream *track,int video){
@@ -247,6 +277,14 @@ static void codec_log(void *context,int level,const char *fmt,va_list args){
  if(file>=0){sceIoWrite(file,text,(unsigned)n);sceIoClose(file);}
 }
 #endif
+static int offline_index(void){
+ if(stream.source_kind!=3 || !stream.seek_offset)return 0;char path[4200];snprintf(path,sizeof(path),"%s.idx",stream.url);FILE *index=fopen(path,"rb");if(!index)return 0;
+ uint32_t point[2],last[2]={0,0},chosen[2]={0,0};unsigned count=0;int result=0;
+ while(fread(point,sizeof(point),1,index)==1){if(++count>8192 || (count==1 && (point[0] || point[1])) || (count>1 && (point[0]<=last[0] || point[1]<=last[1]))){result=-1;break;}if(point[0]<=stream.seek_offset){chosen[0]=point[0];chosen[1]=point[1];}last[0]=point[0];last[1]=point[1];}
+ if(ferror(index) || !count || ftell(index)%8)result=-1;fclose(index);if(result)return AVERROR_INVALIDDATA;
+ if(fseek(stream.file,0,SEEK_END))return AVERROR(EIO);long size=ftell(stream.file);if(size<0 || chosen[1]>=(uint32_t)size || fseek(stream.file,chosen[1],SEEK_SET))return AVERROR_INVALIDDATA;
+ stream.file_skip=chosen[1];stream.seek_offset-=chosen[0];stream.indexed=1;return 0;
+}
 static int worker(void){
  AVFormatContext *format=NULL;AVIOContext *io=NULL;AVCodecContext *video=NULL,*audio=NULL;AVPacket *packet=NULL;AVFrame *frame=NULL;
  int r=0,vi=-1,ai=-1;unsigned char *buffer=NULL;
@@ -259,15 +297,15 @@ static int worker(void){
  const int modules[]={SCE_SYSMODULE_AVCDEC,SCE_SYSMODULE_AUDIOCODEC};
  for(unsigned i=0;i<2;i++)if(sceSysmoduleIsLoaded(modules[i])!=0){stage(i?"AAC module":"AVC module");r=sceSysmoduleLoadModule(modules[i]);if(r<0)goto out;stream.modules|=1u<<i;}
 #endif
- stage("HLS prefetch startup");
- r=pthread_create(&stream.downloader,NULL,download_worker,NULL);if(r){r=AVERROR(r);goto out;}stream.downloader_running=1;
- stage("MPEG-TS demux allocation");format=avformat_alloc_context();buffer=av_malloc(32768);packet=av_packet_alloc();frame=av_frame_alloc();
+ if(!stream.source_kind){stage("HLS prefetch startup");
+ r=pthread_create(&stream.downloader,NULL,download_worker,NULL);if(r){r=AVERROR(r);goto out;}stream.downloader_running=1;}else if(stream.source_kind>=2){stream.file=fopen(stream.url,"rb");if(!stream.file){r=AVERROR(EIO);stage("Offline file open");goto out;}r=offline_index();if(r<0){stage("Offline seek index");goto out;}}
+ stage(stream.source_kind==1 || stream.source_kind==2?"MP4 demux allocation":"MPEG-TS demux allocation");format=avformat_alloc_context();buffer=av_malloc(32768);packet=av_packet_alloc();frame=av_frame_alloc();
  if(!format || !buffer || !packet || !frame){r=AVERROR(ENOMEM);goto out;}
- io=avio_alloc_context(buffer,32768,0,NULL,read_media,NULL,NULL);if(!io){r=AVERROR(ENOMEM);goto out;}buffer=NULL;
- io->seekable=0;format->pb=io;format->flags|=AVFMT_FLAG_CUSTOM_IO;format->interrupt_callback=(AVIOInterruptCB){interrupt,NULL};
+ io=avio_alloc_context(buffer,32768,0,NULL,stream.source_kind?read_file:read_media,NULL,stream.source_kind?seek_file:NULL);if(!io){r=AVERROR(ENOMEM);goto out;}buffer=NULL;
+ io->seekable=stream.source_kind?AVIO_SEEKABLE_NORMAL:0;format->pb=io;format->flags|=AVFMT_FLAG_CUSTOM_IO;format->interrupt_callback=(AVIOInterruptCB){interrupt,NULL};
  format->probesize=256*1024;format->max_analyze_duration=2000000;format->fps_probe_size=0;
- stage("MPEG-TS header");r=avformat_open_input(&format,NULL,av_find_input_format("mpegts"),NULL);if(r<0)goto out;
- stage("MPEG-TS stream information");r=avformat_find_stream_info(format,NULL);if(r<0)goto out;
+ stage(stream.source_kind==1 || stream.source_kind==2?"MP4 header":"MPEG-TS header");r=avformat_open_input(&format,NULL,av_find_input_format(stream.source_kind==1 || stream.source_kind==2?"mov":"mpegts"),NULL);if(r<0)goto out;
+ stage(stream.source_kind==1 || stream.source_kind==2?"MP4 stream information":"MPEG-TS stream information");r=avformat_find_stream_info(format,NULL);if(r<0)goto out;
  for(unsigned i=0;i<format->nb_streams;i++){
   AVCodecParameters *p=format->streams[i]->codecpar;
   if(p->codec_type==AVMEDIA_TYPE_VIDEO && vi<0){if(p->codec_id!=AV_CODEC_ID_H264){r=AVERROR_DECODER_NOT_FOUND;goto out;}vi=(int)i;}
@@ -282,26 +320,28 @@ static int worker(void){
 #endif
  if(vi>=0){stage("H.264 hardware codec");r=open_codec(format,vi,vcodec,&video);if(r<0)goto out;}
  if(ai>=0){stage("AAC hardware codec");r=open_codec(format,ai,acodec,&audio);if(r<0)goto out;}
+ if(stream.seek_offset && !stream.indexed && !(stream.source_kind==3 && stream.seek_offset<=10000)){stage("File seek");unsigned preroll=stream.source_kind==3?10000:0;int64_t target=(int64_t)(stream.origin+stream.seek_offset-preroll)*1000;r=avformat_seek_file(format,-1,INT64_MIN,target,target,0);if(r<0)goto out;}
  stream.has_video=vi>=0;stream.has_audio=ai>=0;
  if(video){r=start_decode(&stream.vdecode,video,format->streams[vi],1);if(r<0)goto out;}
  if(audio){r=start_decode(&stream.adecode,audio,format->streams[ai],0);if(r<0)goto out;}
- stage("HLS decoding");
+ stage("HLS decoding");int need_key=stream.source_kind==3 && stream.seek_offset && vi>=0;
  while(!cancelled()){
   pthread_mutex_lock(&stream.lock);int paused=stream.paused;pthread_mutex_unlock(&stream.lock);if(paused){delay_us(5000);continue;}
   r=av_read_frame(format,packet);if(r<0)break;
-  if(packet->stream_index==vi){stage("H.264 hardware decode");r=submit_packet(&stream.vdecode,packet);}
+  if(packet->stream_index==vi){if(need_key && !(packet->flags&AV_PKT_FLAG_KEY)){av_packet_unref(packet);continue;}need_key=0;stage("H.264 hardware decode");r=submit_packet(&stream.vdecode,packet);}
   else if(packet->stream_index==ai){stage("AAC hardware decode");r=submit_packet(&stream.adecode,packet);}else r=0;
   av_packet_unref(packet);if(r<0)break;
   if(vi<0){pthread_mutex_lock(&stream.lock);if(stream.an)stream.ready=1;pthread_mutex_unlock(&stream.lock);}
  }
- if(stream.transport_error){r=stream.transport_error;stage("HLS transport");}
+ if(stream.transport_error){r=stream.transport_error;stage(stream.source_kind?"File transport":"HLS transport");}
  if(r==AVERROR_EOF)r=0;
 out:
  if(r<0 || cancelled())__atomic_store_n(&stream.stop,1,__ATOMIC_RELEASE);
  pthread_mutex_lock(&stream.lock);stream.vdecode.eof=stream.adecode.eof=1;pthread_mutex_unlock(&stream.lock);
  finish_decode(&stream.vdecode);finish_decode(&stream.adecode);
  if(stream.downloader_running){http_media_abort();pthread_join(stream.downloader,NULL);stream.downloader_running=0;}
- if(stream.transport_error){r=stream.transport_error;stage("HLS transport");}
+ if(stream.transport_error){r=stream.transport_error;stage(stream.source_kind?"File transport":"HLS transport");}
+ if(stream.file){fclose(stream.file);stream.file=NULL;}
  av_frame_free(&frame);av_packet_free(&packet);avcodec_free_context(&audio);avcodec_free_context(&video);
  avformat_close_input(&format);if(io){av_freep(&io->buffer);avio_context_free(&io);}av_free(buffer);
  pthread_mutex_lock(&stream.lock);if(r<0 && r!=AVERROR_EXIT && r!=-2)stream.error=r;stream.finished=1;pthread_mutex_unlock(&stream.lock);
@@ -312,9 +352,9 @@ static int worker_entry(SceSize argc,void *arg){(void)argc;(void)arg;return work
 #else
 static void *worker_entry(void *arg){(void)arg;worker();return NULL;}
 #endif
-int hls_backend_start(const char *url){
- hls_backend_stop();memset(&stream,0,sizeof(stream));stream.sequence=UINT64_MAX;stream.stage="HLS worker";
- if(!url || strlen(url)>=sizeof(stream.url))return -1;strcpy(stream.url,url);
+int hls_backend_start_source(const char *url,int kind,unsigned offset){
+ hls_backend_stop();memset(&stream,0,sizeof(stream));stream.sequence=UINT64_MAX;stream.stage=kind?"File worker":"HLS worker";stream.source_kind=kind;stream.seek_offset=offset;
+ if(kind<0 || kind>3 || !url || strlen(url)>=sizeof(stream.url))return -1;strcpy(stream.url,url);
  if(pthread_mutex_init(&stream.lock,NULL))return -1;
  stream.playlist=calloc(1,PLAYLIST_CAP);stream.segment=malloc(SEGMENT_CAP);stream.next_segment=malloc(SEGMENT_CAP);
  if(!stream.playlist || !stream.segment || !stream.next_segment){free(stream.playlist);free(stream.segment);free(stream.next_segment);pthread_mutex_destroy(&stream.lock);return AVERROR(ENOMEM);}
@@ -328,6 +368,7 @@ int hls_backend_start(const char *url){
 #endif
  return 0;
 }
+int hls_backend_start(const char *url){return hls_backend_start_source(url,0,0);}
 void hls_backend_stop(void){
  if(!stream.running)return;__atomic_store_n(&stream.stop,1,__ATOMIC_RELEASE);http_media_abort();
 #ifdef __vita__

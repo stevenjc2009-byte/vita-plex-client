@@ -18,3 +18,8 @@ int player_was_paused(void);
 const char *player_error_stage(void);
 
 void player_adaptive(int enabled);
+
+int player_play_file(const char *url,int kind,unsigned offset);
+
+#include "media.h"
+void player_set_markers(const media_marker_t *markers,unsigned count);

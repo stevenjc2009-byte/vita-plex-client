@@ -14,3 +14,4 @@ int progress_durable(void);
 unsigned progress_position(const settings_t *s,const char *rating);
 
 int progress_rebind(const settings_t *old,const settings_t *next);
+int progress_record_local(const settings_t *settings,const char *rating,unsigned duration,unsigned position);

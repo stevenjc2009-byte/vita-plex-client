@@ -29,3 +29,5 @@ int gui_photo(const char *title,const char *path);
 int gui_up_next(const char *title,int countdown);
 
 void gui_player_end_frame(const unsigned *frame);
+
+void gui_skip_overlay(unsigned *buffer,int credits);

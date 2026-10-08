@@ -33,6 +33,11 @@ static int slot(const char *server,const char *client,const char *rating){load()
  for(int i=0;i<RECORDS;i++)if(!records[i].rating[0])return i;return -1;}
 static int timeline_url(const settings_t *s,const record_t *r,int state,char *url,unsigned cap){char tok[384],id[128];plex_url_encode(s->token,tok,sizeof(tok));plex_url_encode(s->client_id,id,sizeof(id));
  int n=snprintf(url,cap,"%s/:/timeline?ratingKey=%s&key=%%2Flibrary%%2Fmetadata%%2F%s&state=%s&time=%u&duration=%u&X-Plex-Client-Identifier=%s&X-Plex-Token=%s",s->server,r->rating,r->rating,state==1?"playing":state==2?"paused":"stopped",r->position,r->duration,id,tok);return n<0 || (unsigned)n>=cap?-1:0;}
+int progress_record_local(const settings_t *s,const char *rating,unsigned duration,unsigned position){
+ if(!s || !rating || !*rating || strlen(rating)>=32 || strspn(rating,"0123456789")!=strlen(rating) || !position)return -1;
+ char identity[256];int i=slot(scope(s,identity),s->client_id,rating);if(i<0)return -1;record_t previous=records[i];memset(records+i,0,sizeof(records[i]));snprintf(records[i].server,sizeof(records[i].server),"%s",scope(s,identity));snprintf(records[i].client,sizeof(records[i].client),"%s",s->client_id);strcpy(records[i].rating,rating);records[i].duration=duration;records[i].position=duration && position>duration?duration:position;
+ if(persist()){records[i]=previous;return -1;}return 0;
+}
 int progress_pending(void){load();int n=0;for(int i=0;i<RECORDS;i++)n+=records[i].rating[0]!=0;return n;}
 int progress_pending_for(const settings_t *s){load();int count=0;for(int i=0;i<RECORDS;i++)if(records[i].rating[0] && matches(records+i,s))count++;return count;}
 int progress_discard(const settings_t *s,int others){load();record_t backup[RECORDS];memcpy(backup,records,sizeof(records));for(int i=0;i<RECORDS;i++)if(!others || !matches(records+i,s))memset(records+i,0,sizeof(*records));if(persist()){memcpy(records,backup,sizeof(records));return -1;}return 0;}

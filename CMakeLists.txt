@@ -4,7 +4,7 @@ project(vita-plex-client C)
 # Windows: cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=C:/Users/steve/vita-dev/vitasdk/vitasdk/share/vita.toolchain.cmake -B build
 set(VITA_TITLEID "PLEX00001")
 set(VITA_TITLE "Plex Client")
-set(VITA_VERSION "01.40")
+set(VITA_VERSION "01.41")
 
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
@@ -28,12 +28,19 @@ add_executable(${PROJECT_NAME}
   src/player.c
   src/hls.c
   src/hls_backend.c
+  src/package.c
+  src/miniz/miniz.c
+  src/miniz/miniz_tinfl.c
+  src/miniz/miniz_zip.c
+  src/media.c
+  src/offline.c
   src/update.c
   src/gui.c
   src/debugScreen.c
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE src)
+target_compile_definitions(${PROJECT_NAME} PRIVATE MINIZ_NO_DEFLATE_APIS MINIZ_NO_ZLIB_APIS MINIZ_NO_TIME)
 set(PLEX_FFMPEG_ROOT "${CMAKE_SOURCE_DIR}/build/deps/ffmpeg-vita" CACHE PATH "Pinned Vita stream codecs")
 if(NOT EXISTS "${PLEX_FFMPEG_ROOT}/lib/libavcodec.a")
   message(FATAL_ERROR "Build the streaming codecs first: bash tools/build-stream-codecs.sh (VITASDK must be set)")
@@ -89,4 +96,5 @@ vita_create_vpk(vita-plex-client-${VITA_VERSION}.vpk ${VITA_TITLEID} ${PROJECT_N
   FILE ${CMAKE_SOURCE_DIR}/assets/STREAM-CODECS-NOTICES.txt assets/STREAM-CODECS-NOTICES.txt
   FILE ${CMAKE_SOURCE_DIR}/assets/FFmpeg-LGPL-2.1.txt assets/FFmpeg-LGPL-2.1.txt
   FILE ${CMAKE_SOURCE_DIR}/assets/wiliwili-GPL-3.0.txt assets/wiliwili-GPL-3.0.txt
+  FILE ${CMAKE_SOURCE_DIR}/src/miniz/LICENSE assets/MINIZ-LICENSE.txt
 )
