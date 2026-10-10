@@ -38,6 +38,7 @@ static const char *sorts[]={"titleSort:asc","addedAt:desc","year:desc"};
 static const char *sort_names[]={"Title A-Z","Recently added","Newest year"};
 
 static int save(settings_t *st) {
+  player_volume(st->volume);
   if(settings_save(st)<0){settings_unsaved=1;snprintf(notice,sizeof(notice),"Could not save settings. Check free space in ux0:data.");return -1;}settings_unsaved=0;return 0;
 }
 static int request(settings_t *st,const char *target,const char *accept) {
@@ -125,7 +126,7 @@ static int settings_screen(settings_t *st,const char *section) {
   int cursor=0;
   for(;;) {
     if(network_exit_requested())return GUI_QUIT;
-    char server[320],quality[100],resume[80],sorting[80],clocks[80],autoplay[80],subtitles[80],remote[100],remote_quality[100],relay_quality[100],adaptive[100],direct_play[100],skip[100],offline[100],quota[100],auto_update[100];
+    char server[320],quality[100],resume[80],sorting[80],clocks[80],autoplay[80],subtitles[80],remote[100],remote_quality[100],relay_quality[100],adaptive[100],direct_play[100],skip[100],offline[100],quota[100],auto_update[100],volume[80];
     snprintf(server,sizeof(server),"Server: %s",st->server);
     snprintf(quality,sizeof(quality),"Video quality: %d Mbps (H.264 / AAC)",st->bitrate/1000);
     snprintf(resume,sizeof(resume),"Resume playback: %s",st->resume?"On":"Off");
@@ -136,12 +137,13 @@ static int settings_screen(settings_t *st,const char *section) {
     snprintf(remote,sizeof(remote),"Connection: %s",st->remote_mode?"Away from home":"Automatic home / remote");
     snprintf(remote_quality,sizeof(remote_quality),"Remote quality: %d kbps",st->remote_bitrate);snprintf(relay_quality,sizeof(relay_quality),"Relay quality: %d kbps",st->relay_bitrate);snprintf(adaptive,sizeof(adaptive),"Adapt quality on sustained buffering: %s",st->adaptive?"On":"Off");
     snprintf(direct_play,sizeof(direct_play),"Compatible Direct Play: %s",st->direct_play?"On":"Off");snprintf(skip,sizeof(skip),"Skip intro / credits buttons: %s",st->skip_markers?"On":"Off");snprintf(offline,sizeof(offline),"Offline downloads: %s",st->offline?"On":"Off");snprintf(quota,sizeof(quota),"Download storage limit: %d MB",st->offline_quota);snprintf(auto_update,sizeof(auto_update),"Check GitHub updates at launch: %s",st->auto_update?"On":"Off");
+    snprintf(volume,sizeof(volume),"Volume boost: %d%%",st->volume);
     const char *rows[]={server,"Find and select Plex server","Enter / replace Plex token",quality,resume,sorting,
       "Refresh libraries",section && *section?"Scan this library for new media":"Scan all libraries for new media",
-      "Check for app updates","About / controls",clocks,autoplay,subtitles,"Connection diagnostics","Retry saved playback progress","Clear poster cache","Reset preferences","Unlink Plex account",remote,"Reconnect selected server","Remote access setup",remote_quality,relay_quality,adaptive,"Server favorites","Saved Plex accounts",direct_play,skip,offline,quota,"Manage / play downloads",auto_update,"Back"};
-    int choice=gui_choice_cursor("Settings",notice[0]?notice:"Connection, playback and library preferences",rows,33,&cursor);
+      "Check for app updates","About / controls",clocks,autoplay,subtitles,"Connection diagnostics","Retry saved playback progress","Clear poster cache","Reset preferences","Unlink Plex account",remote,"Reconnect selected server","Remote access setup",remote_quality,relay_quality,adaptive,"Server favorites","Saved Plex accounts",direct_play,skip,offline,quota,"Manage / play downloads",auto_update,volume,"Back"};
+    int choice=gui_choice_cursor("Settings",notice[0]?notice:"Connection, playback and library preferences",rows,34,&cursor);
     if(choice==GUI_QUIT)return GUI_QUIT;
-    if(choice<0 || choice==32)return GUI_BACK;
+    if(choice<0 || choice==33)return GUI_BACK;
     if(choice==0) {
       char candidate[256];snprintf(candidate,sizeof(candidate),"%s",st->server);
       int r=gui_keyboard("Server address",candidate,sizeof(candidate),0);if(r==GUI_QUIT)return r;
@@ -182,7 +184,7 @@ static int settings_screen(settings_t *st,const char *section) {
       else if(r==1 || r==2){const char *confirm[]={"Discard these saved positions","Cancel"};int choice=gui_choice("Discard pending progress","Positions already accepted by Plex are unaffected.",confirm,2);if(choice==GUI_QUIT)return choice;if(choice==0)snprintf(notice,sizeof(notice),"%s",progress_discard(st,r==1)?"Could not save journal. Pending positions retained.":"Pending positions discarded.");}
     }
     else if(choice==15){snprintf(notice,sizeof(notice),"%s",gui_cache_clear()?"Could not clear all cached posters.":"Poster cache cleared.");}
-    else if(choice==16){st->bitrate=2000;st->resume=1;st->sort=0;st->autoplay=0;st->subtitles=1;st->performance=2;st->remote_bitrate=2000;st->relay_bitrate=1000;st->adaptive=1;st->direct_play=1;st->skip_markers=1;st->offline=0;st->offline_quota=offline_usage()>512ULL*1024*1024?1024:512;st->auto_update=1;performance_apply(st->performance);save(st);}
+    else if(choice==16){st->bitrate=2000;st->resume=1;st->sort=0;st->autoplay=0;st->subtitles=1;st->performance=2;st->remote_bitrate=2000;st->relay_bitrate=1000;st->adaptive=1;st->direct_play=1;st->skip_markers=1;st->offline=0;st->offline_quota=offline_usage()>512ULL*1024*1024?1024:512;st->auto_update=1;st->volume=100;performance_apply(st->performance);save(st);}
     else if(choice==17){const char *rows2[]={"Unlink account on this Vita","Cancel"};int r=gui_choice("Unlink Plex","This removes this Vita's saved tokens.",rows2,2);if(r==GUI_QUIT)return r;
       if(r==0){st->token[0]=st->account_token[0]=st->client_id[0]=st->server_id[0]=0;settings_ensure_client_id(st);if(save(st))continue;return GUI_HOME;}}
     else if(choice==18){const char *modes[]={"Automatic home / remote","Away from home","Back"};int mode=gui_choice("Connection mode","Away mode uses secure remote connections only",modes,3);if(mode==GUI_QUIT)return mode;if(mode==0 || mode==1){st->remote_mode=mode;if(save(st))continue;int result=discover(st,st->server_id[0]!=0);if(result<0)return GUI_QUIT;if(result>0)return GUI_HOME;}}
@@ -196,6 +198,7 @@ static int settings_screen(settings_t *st,const char *section) {
     else if(choice==29){const char *limits[]={"128 MB","256 MB","512 MB","1024 MB","Back"};int value=gui_choice("Download storage limit","Includes completed and interrupted downloads",limits,5);if(value==GUI_QUIT)return value;if(value>=0 && value<4){int next=128<<value;if(offline_usage()>(uint64_t)next*1024*1024)snprintf(notice,sizeof(notice),"Delete downloads before lowering the storage limit.");else{st->offline_quota=next;save(st);}}}
     else if(choice==30){if(offline_menu(st,notice,sizeof(notice))==GUI_QUIT)return GUI_QUIT;}
     else if(choice==31){st->auto_update=!st->auto_update;save(st);}
+    else if(choice==32){const char *levels[]={"100% (normal)","125%","150%","200%","300%","Back"};int value=gui_choice("Volume boost","For quiet audio. High boost can distort loud passages.",levels,6);if(value==GUI_QUIT)return value;if(value>=0 && value<5){const int gains[]={100,125,150,200,300};st->volume=gains[value];save(st);}}
     else if(choice==24 || choice==25){int r=profiles_menu(st,choice==25);if(r==GUI_QUIT || r==GUI_HOME)return r;}
     else if(choice==20){const char *info[]={"Enable Remote Access in Plex Media Server settings","Link this Vita account and select your Plex server","Use another Wi-Fi network or a phone hotspot","Plex Pass / Remote Watch Pass may be required","Relay uses 1 Mbps video; direct access is preferred","Help: support.plex.tv (Remote Access)","Back"};if(gui_choice("Watch away from home","Your server must stay online; setup happens on the server",info,7)==GUI_QUIT)return GUI_QUIT;}
 

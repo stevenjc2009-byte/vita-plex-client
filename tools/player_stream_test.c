@@ -6,7 +6,7 @@
 #undef sceAudioOutOutput
 #undef sceKernelStartThread
 #include "hls_backend.h"
-static int got_audio,disconnected;
+static int got_audio,disconnected,expected_sample=123;
 int sceNetCtlInetGetState(int *state){*state=disconnected?0:1;return 0;}
 int hls_backend_start(const char *url){assert(url);got_audio=0;return 0;}
 int hls_backend_start_source(const char*u,int k,unsigned o){(void)k;(void)o;return hls_backend_start(u);}
@@ -29,12 +29,13 @@ void gui_player_end_frame(const unsigned *frame){(void)frame;}
 void gui_skip_overlay(unsigned *frame,int credits){(void)frame;(void)credits;}
 int sceKernelStartThread(int id,unsigned n,void *arg){(void)n;(void)arg;assert(id==101);thread_started=1;return pthread_create(&audio_mock,NULL,pump,NULL);}
 int sceAudioOutOutput(int id,const void *data){assert(id==1 && data);const short *pcm=data;
- for(unsigned i=0;i<1024*2;i++)assert(pcm[i]==(i<711*2?123:0));
+ for(unsigned i=0;i<1024*2;i++)assert(pcm[i]==(i<711*2?expected_sample:0));
  __atomic_add_fetch(&audio_outputs,1,__ATOMIC_SEQ_CST);return 0;
 }
 int main(void){
- reset();audio_case=2;assert(!player_play_hls("http://mock/short.m3u8"));assert(!player_run_media("Short ending",16,0,1));
- assert(audio_outputs==1 && joined && !open_blocks() && player_completed() && player_position()==16);
+ const int gains[]={100,150,300};for(unsigned i=0;i<3;i++){reset();audio_case=2;player_volume(gains[i]);expected_sample=123*gains[i]/100;assert(!player_play_hls("http://mock/short.m3u8"));assert(!player_run_media("Short ending",16,0,1));
+ assert(audio_outputs==1 && joined && !open_blocks() && player_completed() && player_position()==16);}
+ player_volume(100);
  reset();audio_case=2;disconnected=1;assert(!player_play_hls("http://mock/disconnected.m3u8"));assert(player_run_media("Disconnected",30000,0,1)==-12);
  assert(!strcmp(player_error_stage(),"Wi-Fi disconnected") && !player_completed() && joined && !open_blocks());
  puts("Real player HLS dispatch: partial PCM tail padded and emitted, clean short EOF, Wi-Fi disconnect and cleanup passed");return 0;

@@ -98,7 +98,7 @@ int main(void) {
   int order[8];assert(plex_connection_order(servers,0,order,8)==4 && order[0]==1 && order[1]==0 && order[2]==3 && order[3]==4);
   assert(plex_connection_order(servers,1,order,8)==2 && order[0]==3 && order[1]==4);
   assert(plex_connection_order(servers,1,order,1)==1 && order[0]==3);
-  settings_t playback;settings_defaults(&playback);
+  settings_t playback;settings_defaults(&playback);assert(playback.volume==100);playback.volume=150;
   snprintf(playback.client_id,sizeof(playback.client_id),"test-vita");snprintf(playback.token,sizeof(playback.token),"secret&token");
   assert(!plex_build_playback_url(&playback,"/library/metadata/42","test-session",12000,media,sizeof(media)));
   assert(strstr(media,"offset=12&session=test-session") && strstr(media,"X-Plex-Client-Identifier=test-vita"));
@@ -129,10 +129,10 @@ int main(void) {
   char address[256]="http://192.168.0.32:32400/  ";assert(!settings_server_url(address));
   assert(!strcmp(address,"http://192.168.0.32:32400"));
   snprintf(address,sizeof(address),"http://user:secret@server:32400");assert(settings_server_url(address)<0);
-  strcpy(settings.server_id,"machine-1");settings.remote_mode=1;settings.connection_kind=2;
+  strcpy(settings.server_id,"machine-1");settings.remote_mode=1;settings.connection_kind=2;settings.volume=150;
   int saved=settings_save(&settings);
   if(saved)perror("settings_save");
-  settings_t roundtrip;assert(!settings_load(&roundtrip) && roundtrip.remote_mode==1 && roundtrip.connection_kind==2 && !strcmp(roundtrip.server_id,"machine-1"));
+  settings_t roundtrip;assert(!settings_load(&roundtrip) && roundtrip.volume==150 && roundtrip.remote_mode==1 && roundtrip.connection_kind==2 && !strcmp(roundtrip.server_id,"machine-1"));
   assert(!plex_build_playback_url(&roundtrip,"/library/metadata/42","session",0,url,sizeof(url)) && strstr(url,"maxVideoBitrate=1000") && strstr(url,"location=wan"));
   assert(!saved);
   assert(!make_test_dir("config.ini.tmp"));settings_t failed=roundtrip;strcpy(failed.server,"https://new.example:32400");

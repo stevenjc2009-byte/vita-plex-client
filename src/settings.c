@@ -15,7 +15,7 @@ void settings_defaults(settings_t *s) {
   memset(s, 0, sizeof(*s));
   snprintf(s->server, sizeof(s->server), "http://192.168.0.32:32400");
   s->bitrate = 2000;s->remote_bitrate=2000;s->relay_bitrate=1000;s->adaptive=1;
-  s->resume = 1;s->direct_play=1;s->skip_markers=1;s->offline_quota=512;s->auto_update=1;
+  s->resume = 1;s->direct_play=1;s->skip_markers=1;s->offline_quota=512;s->auto_update=1;s->volume=100;
   s->performance = 2; // requested boosted launch; plugin may enforce its own profile
   s->subtitles = 1; // server default
 }
@@ -52,6 +52,7 @@ static int load_path(settings_t *s,const char *path) {
     if(sscanf(line,"offline=%d",&s->offline)==1)continue;
     if(sscanf(line,"offline_quota=%d",&s->offline_quota)==1)continue;
     if(sscanf(line,"auto_update=%d",&s->auto_update)==1)continue;
+    if(sscanf(line,"volume=%d",&s->volume)==1)continue;
     if(sscanf(line,"profile_name=%79[^\n]",s->profile_name)==1)continue;
     if (sscanf(line, "server=%255[^\n]", s->server) == 1){server_seen=1;continue;}
     if (sscanf(line, "token=%127[^\n]", s->token) == 1) continue;
@@ -74,6 +75,7 @@ static int load_path(settings_t *s,const char *path) {
   s->remote_mode=!!s->remote_mode;if(s->connection_kind<0 || s->connection_kind>2)s->connection_kind=0;
   if(s->remote_bitrate!=1000 && s->remote_bitrate!=2000 && s->remote_bitrate!=4000)s->remote_bitrate=2000;
   if(s->relay_bitrate!=500 && s->relay_bitrate!=1000)s->relay_bitrate=1000;
+  if(s->volume!=100 && s->volume!=125 && s->volume!=150 && s->volume!=200 && s->volume!=300)s->volume=100;
   s->direct_play=!!s->direct_play;s->skip_markers=!!s->skip_markers;s->offline=s->offline==1;s->auto_update=!!s->auto_update;
   if(s->offline_quota!=128 && s->offline_quota!=256 && s->offline_quota!=512 && s->offline_quota!=1024)s->offline_quota=512;
   s->adaptive=!!s->adaptive;s->resume=!!s->resume;
@@ -95,11 +97,11 @@ static int save_path(const settings_t *s,const char *path) {
  settings_t old;
  // No new write or backup when the canonical contents have not changed.
  if(!load_path(&old,path) && !strcmp(old.server,s->server) && !strcmp(old.token,s->token) && !strcmp(old.account_token,s->account_token) && !strcmp(old.client_id,s->client_id) && !strcmp(old.server_id,s->server_id) && !strcmp(old.profile_name,s->profile_name) &&
- old.direct_play==s->direct_play && old.skip_markers==s->skip_markers && old.offline==s->offline && old.offline_quota==s->offline_quota && old.auto_update==s->auto_update && old.bitrate==s->bitrate && old.remote_bitrate==s->remote_bitrate && old.relay_bitrate==s->relay_bitrate && old.adaptive==s->adaptive && old.resume==s->resume && old.sort==s->sort && old.performance==s->performance && old.autoplay==s->autoplay && old.subtitles==s->subtitles && old.remote_mode==s->remote_mode && old.connection_kind==s->connection_kind)return 0;
+ old.direct_play==s->direct_play && old.skip_markers==s->skip_markers && old.offline==s->offline && old.offline_quota==s->offline_quota && old.auto_update==s->auto_update && old.volume==s->volume && old.bitrate==s->bitrate && old.remote_bitrate==s->remote_bitrate && old.relay_bitrate==s->relay_bitrate && old.adaptive==s->adaptive && old.resume==s->resume && old.sort==s->sort && old.performance==s->performance && old.autoplay==s->autoplay && old.subtitles==s->subtitles && old.remote_mode==s->remote_mode && old.connection_kind==s->connection_kind)return 0;
   FILE *f = fopen(temporary, "w");
   if (!f) return -1;
-  int r = fprintf(f, "server=%s\ntoken=%s\naccount_token=%s\nclient_id=%s\nbitrate=%d\nresume=%d\nsort=%d\nperformance=%d\nautoplay=%d\nsubtitles=%d\nserver_id=%s\nremote_mode=%d\nconnection_kind=%d\nversion=2\nremote_bitrate=%d\nrelay_bitrate=%d\nadaptive=%d\nprofile_name=%s\ndirect_play=%d\nskip_markers=%d\noffline=%d\noffline_quota=%d\nauto_update=%d\ncomplete=1\n",
-    s->server, s->token, s->account_token, s->client_id, s->bitrate, s->resume, s->sort,s->performance,s->autoplay,s->subtitles,s->server_id,s->remote_mode,s->connection_kind,s->remote_bitrate,s->relay_bitrate,s->adaptive,s->profile_name,s->direct_play,s->skip_markers,s->offline,s->offline_quota,s->auto_update);
+  int r = fprintf(f, "server=%s\ntoken=%s\naccount_token=%s\nclient_id=%s\nbitrate=%d\nresume=%d\nsort=%d\nperformance=%d\nautoplay=%d\nsubtitles=%d\nserver_id=%s\nremote_mode=%d\nconnection_kind=%d\nversion=2\nremote_bitrate=%d\nrelay_bitrate=%d\nadaptive=%d\nprofile_name=%s\ndirect_play=%d\nskip_markers=%d\noffline=%d\noffline_quota=%d\nauto_update=%d\nvolume=%d\ncomplete=1\n",
+    s->server, s->token, s->account_token, s->client_id, s->bitrate, s->resume, s->sort,s->performance,s->autoplay,s->subtitles,s->server_id,s->remote_mode,s->connection_kind,s->remote_bitrate,s->relay_bitrate,s->adaptive,s->profile_name,s->direct_play,s->skip_markers,s->offline,s->offline_quota,s->auto_update,s->volume);
   int closed = fclose(f);
   if (r < 0 || closed != 0) { remove(temporary); return -1; }
   // Vita rename replaces the destination; the host C runtime on Windows does

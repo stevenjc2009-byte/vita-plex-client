@@ -1,5 +1,10 @@
 # Plex for PlayStation Vita
 
+01.42 adds Settings > Volume boost (100%, 125%, 150%, 200%, 300%). Boost applies to video, music and offline playback; high boosts can distort loud passages. The Vita volume buttons still control the system volume. Drag vertically through settings and choice menus; swipe up/down or left/right over library cards and media posters to turn pages. Tapping still opens an item; releasing a drag does not.
+
+Settings > Check for app updates uses releases from https://github.com/stevenjc2009-byte/vita-plex-client. Settings > Check GitHub updates at launch controls the automatic check. Installation requires a complete matching `vita-plex-client-<version>.vpk` release asset and an existing VitaShell installation of this app. Releases are version checked and extracted into a validated staging directory before promotion. Future releases are built and attached by the GitHub tag workflow.
+
+
 01.37 replaces the rejected native HLS URL source with application-managed HLS download and MPEG-TS demuxing, followed by explicit Vita H.264/AAC hardware codecs. It follows Plex master playlists, inherits authentication only within the same server origin, bounds downloads and queues, and stops the media request independently of metadata/progress requests. Error notices identify the failing stage; native codec errors are recorded without URLs or tokens. Local desktop decoding and cross-build checks do not prove physical Vita playback.
 
 01.36 fixes a native decoder handle being mistaken for a negative error: opaque handles such as `0x81400280` are valid even though the SDK exposes a signed integer type. The player now uses an empty handle of zero and separately recognizes AvPlayer error codes. High-bit handles are retained through playback, audio pumping and cleanup. Artwork retains its aspect ratio in both grids and details, including wide episode thumbnails; empty space is padded instead of stretching the image.

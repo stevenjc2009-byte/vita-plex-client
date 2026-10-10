@@ -93,15 +93,20 @@ int http_init(void) {
     extern const unsigned char plex_ca_int[];
     extern const unsigned int plex_ca_int_len;
     extern const unsigned char plex_ca_isrg[];extern const unsigned int plex_ca_isrg_len;
-    static SceHttpsData ca0, ca1,ca2;
-    static const SceHttpsData *ca_list[3];
+    extern const unsigned char plex_ca_github_r46[],plex_ca_github_r36[],plex_ca_github_ecc[];
+    extern const unsigned int plex_ca_github_r46_len,plex_ca_github_r36_len,plex_ca_github_ecc_len;
+    static SceHttpsData ca0,ca1,ca2,ca3,ca4,ca5;
+    static const SceHttpsData *ca_list[6];
     ca0.ptr = (char *)plex_ca_root;
     ca0.size = plex_ca_root_len;
     ca1.ptr = (char *)plex_ca_int;
     ca1.size = plex_ca_int_len;
     ca_list[0] = &ca0;
     ca_list[1] = &ca1;ca2.ptr=(char*)plex_ca_isrg;ca2.size=plex_ca_isrg_len;ca_list[2]=&ca2;
-    init_stage="TLS certificates";r=sceHttpsLoadCert(3, ca_list, NULL, NULL);if(r<0)goto tls_fail;
+    ca3.ptr=(char*)plex_ca_github_r46;ca3.size=plex_ca_github_r46_len;ca_list[3]=&ca3;
+    ca4.ptr=(char*)plex_ca_github_r36;ca4.size=plex_ca_github_r36_len;ca_list[4]=&ca4;
+    ca5.ptr=(char*)plex_ca_github_ecc;ca5.size=plex_ca_github_ecc_len;ca_list[5]=&ca5;
+    init_stage="TLS certificates";r=sceHttpsLoadCert(6, ca_list, NULL, NULL);if(r<0)goto tls_fail;
   }
 
   tls_failure=0;inited=1;return 0;

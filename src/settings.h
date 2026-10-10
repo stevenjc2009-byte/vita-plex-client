@@ -15,7 +15,7 @@ typedef struct {
   int bitrate, resume, sort;
   int remote_bitrate,relay_bitrate,adaptive;
   int performance, autoplay, subtitles;
-  int direct_play,skip_markers,offline,offline_quota,auto_update;
+  int direct_play,skip_markers,offline,offline_quota,auto_update,volume;
 } settings_t;
 
 void settings_defaults(settings_t *s);

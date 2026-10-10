@@ -4,6 +4,10 @@
 // working player code): pData is YVU420P2 semi-planar, dims from
 // details.video.width/height; audio is S16 PCM.
 
+#include "audio_gain.h"
+static int volume_percent=100;
+void player_volume(int percent){__atomic_store_n(&volume_percent,percent>=100 && percent<=300?percent:100,__ATOMIC_RELEASE);}
+
 #ifdef __vita__
 
 #include "player.h"
@@ -174,7 +178,7 @@ static int audio_thread(SceSize argc, void *argv) {
     if (!sceAvPlayerGetAudioData(handle, &fr) || !fr.pData) {
 #if !defined(PLEX_MOCK_VITA)
       if(stream_mode && hls_backend_audio_eof()){
-        if(acc_frames && audio_port>=0){memset(acc+acc_frames*channels,0,(PORT_SAMPLES-acc_frames)*channels*sizeof(short));int rc=sceAudioOutOutput(audio_port,acc);if(rc<0)audio_error=rc;}
+        if(acc_frames && audio_port>=0){memset(acc+acc_frames*channels,0,(PORT_SAMPLES-acc_frames)*channels*sizeof(short));audio_gain(acc,PORT_SAMPLES*channels,__atomic_load_n(&volume_percent,__ATOMIC_ACQUIRE));int rc=sceAudioOutOutput(audio_port,acc);if(rc<0)audio_error=rc;}
         return 0;
       }
 #endif
@@ -210,6 +214,7 @@ static int audio_thread(SceSize argc, void *argv) {
       if (acc_frames == ACC_SAMPLES) {
         short *o = acc;
         for (unsigned i = 0; i < ACC_SAMPLES / PORT_SAMPLES; i++) {
+          audio_gain(o,PORT_SAMPLES*channels,__atomic_load_n(&volume_percent,__ATOMIC_ACQUIRE));
           int rc=sceAudioOutOutput(audio_port, o);
           if(rc<0){audio_error=rc;return rc;}
           o += PORT_SAMPLES * channels;

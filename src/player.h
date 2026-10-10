@@ -18,6 +18,7 @@ int player_was_paused(void);
 const char *player_error_stage(void);
 
 void player_adaptive(int enabled);
+void player_volume(int percent);
 
 int player_play_file(const char *url,int kind,unsigned offset);
 

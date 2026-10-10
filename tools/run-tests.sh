@@ -15,6 +15,8 @@ compiler=${CC:-cc}
 "$scratch/text"
 "$compiler" -std=c11 -Wall -Wextra -Werror -Isrc tools/touch_test.c src/touch.c -o "$scratch/touch"
 "$scratch/touch"
+"$compiler" -std=c11 -Wall -Wextra -Werror -Isrc tools/audio_gain_test.c -o "$scratch/gain"
+"$scratch/gain"
 for header in audioout.h avplayer.h ctrl.h display.h kernel/sysmem.h io/fcntl.h io/stat.h kernel/threadmgr.h kernel/processmgr.h sysmodule.h types.h; do
  mkdir -p "$scratch/include/psp2/$(dirname "$header")"
  printf '#include <psp2/mock.h>\n' > "$scratch/include/psp2/$header"

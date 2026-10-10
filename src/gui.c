@@ -330,6 +330,7 @@ static void start_art(const gui_view_t *v,int page) {
 }
 #ifdef __vita__
 #define TOUCH_EVENT (1u<<31)
+#define DRAG_EVENT (1u<<30)
 typedef struct { unsigned old; int held;touch_state_t touch; } input_t;
 static void input_init(input_t *in) {SceCtrlData p={0};sceCtrlPeekBufferPositive(0,&p,1);in->old=p.buttons;in->held=0;touch_init(&in->touch);}
 static unsigned input_read(input_t *in) {
@@ -337,7 +338,7 @@ static unsigned input_read(input_t *in) {
   SceCtrlData p={0};sceCtrlPeekBufferPositive(0,&p,1);unsigned fresh=p.buttons&~in->old;
   unsigned dirs=p.buttons&(SCE_CTRL_LEFT|SCE_CTRL_RIGHT|SCE_CTRL_UP|SCE_CTRL_DOWN);
   if(dirs && p.buttons==in->old){in->held++;if(in->held>=24 && !(in->held%5))fresh|=dirs;}else in->held=0;
-  in->old=p.buttons;if(touch_poll(&in->touch))fresh|=TOUCH_EVENT;sceKernelDelayThread(16000);return fresh;
+  in->old=p.buttons;if(touch_poll(&in->touch))fresh|=TOUCH_EVENT;if(in->touch.down && in->touch.moved && !in->touch.blocked)fresh|=DRAG_EVENT;sceKernelDelayThread(16000);return fresh;
 }
 #endif
 int gui_browse_view(gui_view_t *v) {
@@ -353,6 +354,17 @@ int gui_browse_view(gui_view_t *v) {
     if(observed!=version){version=observed;dirty=1;}
     if(dirty){draw_grid(v,nav);present();dirty=0;}
     unsigned p=input_read(&in);if(!p)continue;dirty=1;
+    if(p&DRAG_EVENT){
+      if(in.touch.start_x>=202 && in.touch.start_y>=120 && in.touch.start_y<510){
+        int steps=touch_scroll(&in.touch,90,in.touch.axis==1);
+        if(steps){int next=page+steps,max=(v->n-1)/per;nav=-1;
+          if(next<0){if(v->offset){result=GUI_PREVIOUS;break;}next=0;}
+          if(next>max){if(v->offset+v->n<v->total){result=GUI_NEXT;break;}next=max;}
+          if(v->n)v->cursor=next*per;
+        }
+      }
+      continue;
+    }
     if(p&TOUCH_EVENT){int x=in.touch.x,y=in.touch.y;int selected=touch_sidebar(x,y);
       if(selected>=0){int actions[]={GUI_VIEWS,GUI_HOME,GUI_SEARCH,GUI_REFRESH,GUI_SCAN,GUI_SETTINGS};result=actions[selected];break;}
       if(x<176 && y>=451 && y<478){result=GUI_SETTINGS;break;}if(x<176 && y>=481){result=GUI_QUIT;break;}
@@ -394,8 +406,9 @@ int gui_browse_view(gui_view_t *v) {
 #endif
   stop_art();return result;
 }
-static void draw_choices(const char *title,const char *subtitle,const char **rows,int count,int cursor) {
-  shell(title,subtitle,-2);int first=(cursor/7)*7;
+static void draw_choices(const char *title,const char *subtitle,const char **rows,int count,int cursor,int first) {
+  shell(title,subtitle,-2);
+  if(count>7){int max=count-7,pos=first>max?max:first;rect(910,123,4,328,TILE);rect(910,123+pos*268/max,4,60,GOLD);}
   for(int i=first;i<count && i<first+7;i++) {
     int y=123+(i-first)*48;
     rect(220,y,680,40,i==cursor?TILE:PANEL);if(i==cursor)rect(220,y,3,40,GOLD);
@@ -404,20 +417,22 @@ static void draw_choices(const char *title,const char *subtitle,const char **row
   rect(220,510,210,30,TILE);rect(470,510,140,30,TILE);rect(640,510,130,30,TILE);rect(800,510,100,30,TILE);text("Back",232,514,0,GREY,190);text("Up",482,514,0,GREY,115);text("Down",652,514,0,GREY,105);text("Exit",812,514,0,GREY,75);
 }
 int gui_choice_cursor(const char *title,const char *subtitle,const char **rows,int count,int *selection) {
-  int cursor=selection?*selection:0;if(cursor<0 || cursor>=count)cursor=0;
+  int cursor=selection?*selection:0;if(cursor<0 || cursor>=count)cursor=0;int first=(cursor/7)*7;
 #ifdef __vita__
   input_t in;input_init(&in);int dirty=1;
   for(;;) {
-    if(dirty){draw_choices(title,subtitle,rows,count,cursor);present();dirty=0;}
+    if(dirty){draw_choices(title,subtitle,rows,count,cursor,first);present();dirty=0;}
     unsigned p=input_read(&in);if(!p)continue;dirty=1;
-    if(p&TOUCH_EVENT){int index=touch_choice(in.touch.x,in.touch.y);if(index>=0){index+=(cursor/7)*7;if(index<count){if(selection)*selection=index;return index;}}
+    if(p&DRAG_EVENT){if(in.touch.start_x>=220 && in.touch.start_y>=123 && in.touch.start_y<470){int steps=touch_scroll(&in.touch,48,0);if(steps){int next=first+steps,max=count>7?count-7:0;if(next<0)next=0;if(next>max)next=max;cursor+=next-first;first=next;if(cursor>=count)cursor=count?count-1:0;}}continue;}
+    if(p&TOUCH_EVENT){int index=touch_choice(in.touch.x,in.touch.y);if(index>=0){index+=first;if(index<count){if(selection)*selection=index;return index;}}
       if(in.touch.y>=510){if(in.touch.x<450)return GUI_BACK;if(in.touch.x>=780)return GUI_QUIT;p|=in.touch.x<620?SCE_CTRL_UP:SCE_CTRL_DOWN;}else continue;}
     if(p&SCE_CTRL_CIRCLE)return GUI_BACK;if(p&SCE_CTRL_START)return GUI_QUIT;
     if(p&SCE_CTRL_UP && cursor>0)cursor--;if(p&SCE_CTRL_DOWN && cursor+1<count)cursor++;
+    if(cursor<first)first=cursor;if(cursor>=first+7)first=cursor-6;
     if(p&SCE_CTRL_CROSS && count>0){if(selection)*selection=cursor;return cursor;}
   }
 #else
-  draw_choices(title,subtitle,rows,count,cursor);present();return GUI_BACK;
+  draw_choices(title,subtitle,rows,count,cursor,first);present();return GUI_BACK;
 #endif
 }
 int gui_choice(const char *title,const char *subtitle,const char **rows,int count){return gui_choice_cursor(title,subtitle,rows,count,NULL);}
