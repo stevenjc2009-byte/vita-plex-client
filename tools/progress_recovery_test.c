@@ -1,3 +1,4 @@
+#define _DEFAULT_SOURCE
 #define main conversion_mock_main
 #include "parallel_video_test.c"
 #undef main

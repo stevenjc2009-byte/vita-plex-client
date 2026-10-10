@@ -5,6 +5,7 @@
 #include "session.h"
 #include "http.h"
 #include <assert.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>

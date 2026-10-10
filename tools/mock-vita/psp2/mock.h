@@ -36,7 +36,7 @@ typedef struct {
 #define SCE_AUDIO_OUT_MODE_MONO 1
 #define SCE_AUDIO_OUT_PORT_TYPE_MAIN 1
 #define SCE_AUDIO_OUT_PORT_TYPE_BGM 2
-void *mock_memalign(unsigned,unsigned);
+void *mock_memalign(size_t,size_t);
 int sceIoOpen(const char*,int,int);
 int sceIoWrite(int,const void*,unsigned);
 int sceSysmoduleLoadModule(int);

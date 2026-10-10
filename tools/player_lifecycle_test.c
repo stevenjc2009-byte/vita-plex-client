@@ -23,7 +23,7 @@ static SceAvPlayerInitData init_copy;
 static int open_blocks(void){int n=0;for(int i=1;i<16;i++)n+=blocks[i].ptr!=NULL;return n;}
 static void reset(void){assert(!open_blocks());init_fail=0;source_fail=alloc_fail=thread_fail=never_active=initial_cross=cancel_at=0;
  active_calls=frames=peeks=closed=starts=thread_started=joined=audio_case=audio_outputs=scenario=overlay_seen=0;last_pixel=0;resume_given=0;player_start_paused(0);decoder_memory=generic_memory=NULL;}
-void *mock_memalign(unsigned a,unsigned n){assert(a>=sizeof(void*) && !(a&(a-1)));return malloc(n);}
+void *mock_memalign(size_t a,size_t n){assert(a>=sizeof(void*) && !(a&(a-1)));return malloc(n);}
 int sceIoOpen(const char *p,int f,int m){(void)p;(void)f;(void)m;return -1;}
 int sceIoWrite(int f,const void *p,unsigned n){(void)f;(void)p;return (int)n;}
 int sceSysmoduleLoadModule(int m){(void)m;return 0;}
