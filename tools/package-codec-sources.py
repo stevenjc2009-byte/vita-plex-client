@@ -12,7 +12,9 @@ with zipfile.ZipFile(root/'build/codec-sources.zip','w',zipfile.ZIP_DEFLATED) as
  for name in ('config.h','config_components.h','ffbuild/config.mak','ffbuild/config.sh'):
   if (source/name).is_file():z.write(source/name,'generated/'+name)
 with zipfile.ZipFile(root/'build/client-source.zip','w',zipfile.ZIP_DEFLATED) as z:
- for raw in subprocess.check_output(['git','ls-files','-z'],cwd=root).split(b'\0'):
+ # Actions containers use a different owner from the checkout action. Trust
+ # only this exact repository for this read, without changing global Git config.
+ for raw in subprocess.check_output(['git','-c','safe.directory='+str(root),'ls-files','-z'],cwd=root).split(b'\0'):
   if raw:
    name=raw.decode();assert not name.startswith(('build/','.git/'));z.write(root/name,'vita-plex-client/'+name)
 print('Client and pinned codec sources packaged')
